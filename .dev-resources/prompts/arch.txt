@@ -1,0 +1,19 @@
+I want to create an agentic system which should be able to use 2 channels email and sharepoint to get certain information.
+For an example if I want to have a list of all the employess in a certain department and I tell the agentic system to fetch this information from an employee Raj then a mail should be sent to Raj. If he is on leave then the mail should be forwared to his line manager.
+
+Tell me all the integration points. What are all the components involved. What should be the technology involved. For me here are some suggestions, langgraph, a2a, ag-ui, copilot-kit etc whichever are required.
+
+feel free to use @agent-tech-intelligence-researcher if required.
+------------------------
+
+🤔 Questions to Consider for Quality/Experience
+
+  1. Retry Logic: What if email fails to send? How many retries? - 3
+  2. Audit Trail: Do you need logging of who requested what information and from whom? - Yes
+  3. Response Parsing: When Raj replies, how does the agent extract the relevant information from his email? (NLP/LLM parsing
+  needed?) - LLM parsing. It may happen that Raj asks for clarifying questions in that case the agent should be able to reply back with relevant informtaion. So it is kind of autonoumous where Raj can freely talk to the email agent until he understands what exactly needs to be sent. And the same True for the email agent also if the reply from Raj is not satisfactory then the email agent can again ask For more information from raj.
+  4. Multi-language Support: Will emails be in English only? - for now yes but not necessarily in future
+  5. Rate Limiting: Microsoft Graph API has throttling limits - how many requests/day expected? - this is a poc so keep it to that only
+  6. Notification Preferences: Should users be able to opt-out or set preferred contact methods? - what does it mean?
+  7. Error Handling UX: How should end-users be notified of failures? - an email should be sent from the email agent to the end in such cases
+-----------------------------
