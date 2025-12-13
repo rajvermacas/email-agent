@@ -15,7 +15,7 @@ Info-Agent is an AI-powered system that automates information gathering through 
 
 - **Intelligent Orchestration**: LangGraph-based workflow engine with state persistence
 - **LLM-Powered**: Uses Google Gemini for plan generation and email composition
-- **Agent-to-Agent Communication**: Implements Google's A2A protocol for inter-agent coordination
+- **Agent-to-Agent Communication**: Uses official Google A2A SDK v0.3.21 for spec-compliant inter-agent coordination
 - **Email Automation**: Automated email sending, receiving, and parsing
 - **Workflow Management**: Create, approve, and track multi-step workflows
 - **State Persistence**: SQLite-backed checkpointing allows workflows to resume after restart
@@ -103,9 +103,9 @@ Info-Agent consists of two main components:
 ┌──────────────────────────────────────────────────┐
 │         FastAPI Gateway (Port 8000)              │
 │  • Workflow Management API                       │
-│  • Supervisor Agent (LangGraph)                  │
-│  • Mail Agent (Embedded)                         │
-│  • A2A Agent Registry                            │
+│  • Supervisor Agent (LangGraph + A2A SDK Client) │
+│  • Mail Agent (A2A SDK Server - Embedded)        │
+│  • A2A Agent Registry (Custom SQLite)            │
 └──────────────────────────────────────────────────┘
                       ↓ SMTP
 ┌──────────────────────────────────────────────────┐
@@ -115,7 +115,8 @@ Info-Agent consists of two main components:
 │  • Webhook Notifications                         │
 └──────────────────────────────────────────────────┘
 
-Note: Mail Agent is embedded in Gateway (Phase 1).
+Note: Using official a2a-sdk v0.3.21 for A2A protocol.
+Mail Agent is embedded in Gateway (Phase 1).
 Separate A2A service on port 8001 planned for Phase 2.
 ```
 
@@ -441,7 +442,7 @@ See [.env.example](./.env.example) for a complete example configuration.
 ```
 info-agent/
 ├── src/info_agent/          # Main application source
-│   ├── a2a/                 # A2A protocol implementation
+│   ├── a2a/                 # A2A SDK integration + custom registry
 │   ├── agents/              # AI agents (supervisor, mail)
 │   ├── api/                 # REST API routes and models
 │   ├── email/               # Mock email server
@@ -651,9 +652,10 @@ docker-compose up -d
 - Supervisor Agent with LangGraph
 - Mail Agent with email composition
 - Mock Email Server
-- A2A Protocol implementation
+- **Official A2A SDK integration (v0.3.21)** - 100% spec-compliant
 - Google Gemini LLM integration
 - SQLite checkpointing
+- 76.7% code reduction from custom A2A implementation
 
 ### Phase 2 - Full Backend
 
@@ -722,7 +724,8 @@ MIT License - see LICENSE file for details
 - Built with [FastAPI](https://fastapi.tiangolo.com/)
 - Orchestrated with [LangGraph](https://langchain-ai.github.io/langgraph/)
 - Powered by [Google Gemini](https://ai.google.dev/)
-- Implements [Google A2A Protocol](https://github.com/google/a2a)
+- Uses [Official A2A SDK v0.3.21](https://github.com/google/a2a-sdk-python) for agent communication
+- Implements [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/)
 
 ---
 

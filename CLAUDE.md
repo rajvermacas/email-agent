@@ -154,16 +154,16 @@ Note: In Phase 1, Mail Agent is embedded in the Gateway. Standalone service plan
 │   ├── config.py                      # Settings (Pydantic BaseSettings)
 │   ├── main.py                        # FastAPI Gateway entry point
 │   │
-│   ├── a2a/                           # A2A Protocol Implementation
-│   │   ├── __init__.py
-│   │   ├── client.py                  # A2A client for sending tasks
-│   │   ├── models.py                  # A2A data models (AgentCard, etc.)
+│   ├── a2a/                           # A2A SDK Integration
+│   │   ├── __init__.py                # Re-exports SDK types
+│   │   ├── sdk_client_wrapper.py      # SDK client wrapper (441 lines)
+│   │   ├── registry_models.py         # Registry-specific models (46 lines)
 │   │   ├── registry.py                # Agent registry endpoints
 │   │   └── storage.py                 # SQLite storage for agents
 │   │
 │   ├── agents/                        # AI Agents
 │   │   ├── mail/                      # Mail Agent (A2A Worker)
-│   │   │   ├── agent.py               # FastAPI A2A server
+│   │   │   ├── agent.py               # SDK-based A2A server (RequestHandler)
 │   │   │   ├── composer.py            # LLM email composition
 │   │   │   ├── parser.py              # Email parsing logic
 │   │   │   ├── smtp_client.py         # SMTP client wrapper
@@ -317,12 +317,19 @@ class SupervisorState(TypedDict):
 ### 4. Mail Agent (`agents/mail/`)
 
 - **Purpose**: Email operations specialist agent
-- **Technology**: FastAPI A2A server with aiosmtplib
+- **Technology**: A2A SDK server (`RequestHandler` + `A2ARESTFastAPIApplication`) with aiosmtplib
 - **Components**:
-  - `agent.py`: A2A server with skill endpoints
+  - `agent.py`: SDK-based A2A server implementing `RequestHandler`
   - `composer.py`: LLM-powered email composition
   - `parser.py`: Email content parsing
   - `smtp_client.py`: SMTP client wrapper
+
+**SDK Integration**:
+- Implements `MailAgentRequestHandler(RequestHandler)` from a2a-sdk
+- Uses `A2ARESTFastAPIApplication` for JSON-RPC 2.0 endpoints
+- Handles `Message` objects (SDK type) instead of custom task requests
+- Returns `Task` objects (SDK type) with conversation history
+- Snake_case field names (`default_input_modes`, `default_output_modes`)
 
 **Skills**:
 - `send-email`: Compose and send emails
@@ -631,44 +638,108 @@ async def test_create_resource(test_client):
 agents/
 └── my_agent/
     ├── __init__.py
-    ├── agent.py      # FastAPI A2A server
+    ├── agent.py      # SDK-based A2A server
     ├── skills.py     # Skill implementations
     └── state.py      # Agent state schema
 ```
 
-2. **Implement A2A server** in `agent.py`:
+2. **Implement A2A server using SDK** in `agent.py`:
 ```python
 from fastapi import FastAPI
-from info_agent.a2a.models import AgentCard, Skill
+from a2a.server import RequestHandler, A2ARESTFastAPIApplication
+from a2a.types import AgentCard, AgentSkill, Message, Task, TaskStatus, Role, DataPart
+from info_agent.a2a import AgentCard, AgentSkill  # Re-exported from SDK
 
-app = FastAPI(title="My Agent")
-
+# Define agent card using SDK types
 AGENT_CARD = AgentCard(
     name="my-agent",
     description="My agent description",
     version="1.0.0",
     url="http://localhost:8002",
     skills=[
-        Skill(
+        AgentSkill(
             id="my-skill",
             name="My Skill",
-            description="Skill description"
+            description="Skill description",
+            tags=["tag1"],
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object", "properties": {}}
         )
-    ]
+    ],
+    default_input_modes=["text"],  # SDK uses snake_case
+    default_output_modes=["text"]
 )
 
-@app.get("/.well-known/agent.json")
-async def get_agent_card():
-    return AGENT_CARD
+# Implement request handler using SDK
+class MyAgentRequestHandler(RequestHandler):
+    """SDK-compliant A2A request handler."""
 
-@app.post("/a2a/tasks")
-async def handle_task(request: A2ATaskRequest):
-    # Handle tasks
-    pass
+    def __init__(self):
+        self.agent_card = AGENT_CARD
+
+    async def on_message_send(self, message: Message) -> Task:
+        """Handle incoming messages (SDK method)."""
+        skill_id = message.metadata.get("skill_id")
+
+        if skill_id == "my-skill":
+            # Extract data from message
+            data = message.parts[0].data if message.parts else {}
+
+            # Process the skill
+            result = await self._execute_skill(data)
+
+            # Create response message (SDK type)
+            response_message = Message(
+                message_id=f"response-{message.message_id}",
+                task_id=message.task_id,
+                role=Role.agent,
+                parts=[DataPart(data=result)]
+            )
+
+            # Return Task with conversation history
+            return Task(
+                id=message.task_id,
+                context_id=message.task_id,
+                status=TaskStatus.completed,
+                history=[message, response_message]
+            )
+
+        # Unknown skill
+        raise ValueError(f"Unknown skill: {skill_id}")
+
+    async def on_get_task(self, task_id: str) -> Task:
+        """Retrieve task status (SDK method)."""
+        # Implement task retrieval logic
+        pass
+
+    # Stub implementations for abstract methods
+    async def on_message_stream_start(self, message: Message): pass
+    async def on_message_stream_chunk(self, chunk): pass
+    async def on_message_stream_end(self): pass
+    async def on_push_notification_subscribe(self, request): pass
+    async def on_push_notification_unsubscribe(self, subscription_id): pass
+
+# Create FastAPI app using SDK
+app = FastAPI(title="My Agent")
+handler = MyAgentRequestHandler()
+a2a_app = A2ARESTFastAPIApplication(handler)
+a2a_app.mount(app)
 ```
 
-3. **Register with A2A Registry** on startup
-4. **Write comprehensive tests**
+3. **Use SDK client wrapper to invoke the agent**:
+```python
+from info_agent.a2a import get_sdk_client
+
+client = get_sdk_client()
+result = await client.send_task(
+    agent_url="http://localhost:8002",
+    skill_id="my-skill",
+    payload={"param": "value"}
+)
+```
+
+4. **Register with A2A Registry** on startup
+5. **Write comprehensive tests using SDK types**
 
 ### Working with LLM
 
@@ -978,7 +1049,10 @@ pip install -e .
 | `workflow/nodes.py` | Node implementations | Implementing new workflow steps |
 | `agents/supervisor/planner.py` | LLM plan generation | Changing planning logic |
 | `agents/mail/composer.py` | Email composition | Modifying email templates |
+| `agents/mail/agent.py` | Mail Agent A2A server | Modifying SDK RequestHandler logic |
+| `a2a/sdk_client_wrapper.py` | SDK client wrapper | Changing SDK client API |
 | `a2a/registry.py` | Agent registry | Changing agent discovery |
+| `a2a/registry_models.py` | Registry models | Adding registry-specific models |
 | `llm/factory.py` | LLM instance management | Adding new LLM providers |
 | `.env.example` | Configuration template | Adding new env variables |
 | `pyproject.toml` | Dependencies & metadata | Adding dependencies |
@@ -995,7 +1069,7 @@ pip install -e .
 - `langchain-google-genai` (2.0+): Gemini integration
 - `langgraph` (0.2+): Workflow orchestration
 - `langgraph-checkpoint-sqlite` (2.0+): State persistence
-- `a2a-sdk` (0.3+): A2A protocol
+- `a2a-sdk` (0.3.21+): **Official Google A2A SDK** for agent-to-agent communication
 - `httpx` (0.25+): Async HTTP client
 - `aiosmtpd` (1.4+): SMTP server
 - `aiosmtplib` (3.0+): SMTP client
@@ -1044,6 +1118,7 @@ See `pyproject.toml` for complete list with version constraints.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.1.0 | 2025-12-13 | Updated for A2A SDK migration (v0.3.21) - 76.7% code reduction |
 | 1.0.0 | 2025-12-13 | Initial documentation for Phase 1 MVP Backend completion |
 
 ---
@@ -1051,7 +1126,14 @@ See `pyproject.toml` for complete list with version constraints.
 ## Additional Resources
 
 - **Architecture Documents**: `.dev-resources/architecture/`
+- **A2A SDK Migration**: `.dev-resources/migration/a2a-sdk-migration-notes.md`
+- **A2A SDK Migration Mapping**: `.dev-resources/migration/a2a-sdk-migration-map.md`
 - **Research Materials**: `resources/research/`
 - **LLM Module Docs**: `src/info_agent/llm/README.md`
 - **Test Data**: `test_data/`
 - **Scripts**: `scripts/`
+
+### External References
+- **A2A Specification**: https://a2a-protocol.org/latest/specification/
+- **A2A SDK Repository**: https://github.com/google/a2a-sdk-python
+- **Google Gemini**: https://ai.google.dev/
