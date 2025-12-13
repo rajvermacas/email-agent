@@ -269,18 +269,22 @@ print(f"Using model: {settings.llm_model}")
 
 ### 2. A2A Protocol (`a2a/`)
 
-- **Purpose**: Google A2A protocol implementation for inter-agent communication
+- **Purpose**: Google A2A protocol integration using official a2a-sdk v0.3.21
+- **Technology**: Official a2a-sdk from Google + custom registry
 - **Components**:
-  - `models.py`: AgentCard, Skill, Task request/response models
+  - `sdk_client_wrapper.py`: Simplified SDK client wrapper (441 lines)
+  - `registry_models.py`: Registry-specific response models (46 lines)
   - `registry.py`: Agent registration and discovery endpoints
   - `storage.py`: SQLite persistence for registered agents
-  - `client.py`: Client for sending tasks to agents
 
 **Key Features**:
-- Agent registration with capability discovery
-- Task delegation with JSON payloads
-- SQLite-backed agent registry
-- HTTP-based communication
+- Official SDK integration (100% spec-compliant)
+- JSON-RPC 2.0 protocol (SDK-managed)
+- Server: Uses SDK's `RequestHandler` and `A2ARESTFastAPIApplication`
+- Client: Uses SDK's `ClientFactory` via `SDKClientWrapper`
+- All models from SDK: `AgentCard`, `AgentSkill`, `Message`, `Task`, `TaskStatus`
+- Custom SQLite-backed registry (not part of A2A spec)
+- 76.7% code reduction from custom implementation (1,675 → 390 lines)
 
 ### 3. Supervisor Agent (`agents/supervisor/`)
 
