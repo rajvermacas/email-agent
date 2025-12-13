@@ -1,0 +1,15 @@
+I have got an architecture plan document @.dev-resources/architecture/ARCHITECTURE.md
+I want you to read it carefully and divide the document into 4 mutually exclusive logically separated from MVP iterative feature development point of view.
+
+So that I can implment the bare minimum very first MVP using first document without any UI. Just the bare minimum backend.
+Second document where I can improve the backend to support all features.
+Third document where I can implement the bare minimum UI and integrate it with the backend.
+Fourth document where I can improve UI to support all the features.
+
+Before writing to any file first show me the plan of seggregation the whole architecture. Only upon my approval you go ahead and create the files. 
+First show a logical separation of all the 4 documents and then before writing to any document first show me its summary and then write the whole architecture in the single document.
+
+Remember not to miss any feature from the original document and you must include all the features in either of the 4 newly discussed documents.
+----------------------
+
+In phase 1: Remember to first support gemini 2.5 flash LLM in langgraph.
