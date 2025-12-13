@@ -1,0 +1,33 @@
+Supervisor Agent
+    Description:
+        - It interacts with the end user
+        - It goes on requesting information from the point of contact person over mail as per the instructions from the end user
+        - Validates if the requested information is correct
+
+    Input:
+        - instructions
+        - faq
+        - escalation
+        - validation
+
+    Processing:
+        - Calls agent registry server
+        - Creates plan on which agents to call
+        - Calls validation agent
+
+    Output:
+        - The requested information with commentary if its a fail or pass
+
+Mail Agent
+    Description:
+        - This agent should be able to draft and send mails to the point of contact person
+    
+    Input:
+        - Requested document and the point of contact email address
+
+    Processing:
+        - Registers itself on to agent registry
+        - Draft and sends mail to point of contact email address
+
+    Output:
+        - Status of the job done

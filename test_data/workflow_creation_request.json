@@ -1,0 +1,4 @@
+{
+  "workflow_name": "Test HR Document Request",
+  "instructions": "Please retrieve the latest HR policy documents from our HR Manager.\n\nTarget: John Smith (john.smith@company.example.com)\nRequest: I need the following documents:\n1. Employee handbook (latest version)\n2. Leave policy document\n3. Remote work policy\n\nPlease send a professional email requesting these documents and compile the responses once received.\n\nPriority: Normal\nDue Date: Within 1 week"
+}

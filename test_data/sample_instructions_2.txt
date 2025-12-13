@@ -1,0 +1,20 @@
+Information Request: Financial Report
+
+Request Type: Document Retrieval
+
+Target Contact:
+- Name: Sarah Johnson
+- Email: sarah.johnson@finance.example.com
+- Department: Finance
+
+Information Needed:
+- Q3 2024 Financial Summary
+- Budget allocation spreadsheet for Project Alpha
+- Expense report template
+
+Additional Context:
+This is for the upcoming board meeting. The documents are needed
+for the quarterly review presentation.
+
+Tone: Professional and formal
+Urgency: High - needed within 3 business days

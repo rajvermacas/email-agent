@@ -1,0 +1,27 @@
+{
+  "event": "email.received",
+  "message_id": "msg-test-001",
+  "thread_id": "thread-abc123",
+  "from_address": "john.smith@company.example.com",
+  "to_address": "info-agent@system.example.com",
+  "subject": "Re: Information Request - HR Policy Documents",
+  "body": "Hi,\n\nThank you for reaching out. I am happy to provide the requested documents.\n\nPlease find attached:\n1. Employee Handbook v2024.1\n2. Leave Policy Document (updated March 2024)\n3. Remote Work Policy Guidelines\n\nLet me know if you need any additional information.\n\nBest regards,\nJohn Smith\nHR Manager",
+  "attachments": [
+    {
+      "filename": "employee_handbook_v2024.1.pdf",
+      "content_type": "application/pdf",
+      "size": 1024000
+    },
+    {
+      "filename": "leave_policy_march_2024.docx",
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 45000
+    },
+    {
+      "filename": "remote_work_policy.pdf",
+      "content_type": "application/pdf",
+      "size": 256000
+    }
+  ],
+  "received_at": "2024-12-13T10:30:00Z"
+}

@@ -1,0 +1,15 @@
+Information Request: HR Policy Documents
+
+Please retrieve the latest HR policy documents from our HR Manager.
+
+Target: John Smith (john.smith@company.example.com)
+Request: I need the following documents:
+1. Employee handbook (latest version)
+2. Leave policy document
+3. Remote work policy
+
+Please send a professional email requesting these documents and compile
+the responses once received.
+
+Priority: Normal
+Due Date: Within 1 week
