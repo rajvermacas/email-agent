@@ -26,7 +26,7 @@ async def test_config() -> bool:
 
         settings = get_settings()
         print(f"  Host: {settings.host}")
-        print(f"  Port: {settings.port}")
+        print(f"  Port: {settings.gateway_port}")
         print(f"  Debug: {settings.debug}")
         print(f"  Log Level: {settings.log_level}")
         print("  ✓ Configuration OK")

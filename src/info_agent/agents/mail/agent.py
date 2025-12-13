@@ -354,7 +354,7 @@ class MailAgent:
             registry_url=self.settings.a2a_registry_url,
         )
 
-        register_url = f"{self.settings.a2a_registry_url}/register"
+        register_url = f"{self.settings.a2a_registry_url}/agents/register"
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

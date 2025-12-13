@@ -41,3 +41,5 @@ venv/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+data/

@@ -4,7 +4,8 @@ Runner script to start all Info-Agent services.
 
 This script starts:
 1. Mock Email Server (SMTP + REST)
-2. FastAPI Gateway
+2. FastAPI Gateway (includes Supervisor Agent)
+3. Mail Agent (A2A worker)
 
 Usage:
     python scripts/run_all_services.py
@@ -56,6 +57,7 @@ async def main() -> None:
     try:
         # Import services
         from info_agent.email.server import MockEmailServer
+        from info_agent.agents.mail.agent import MailAgent
         import uvicorn
         from info_agent.main import app
 
@@ -77,7 +79,7 @@ async def main() -> None:
             config = uvicorn.Config(
                 app,
                 host=settings.host,
-                port=settings.port,
+                port=settings.gateway_port,
                 log_level=settings.log_level.lower(),
             )
             server = uvicorn.Server(config)
@@ -88,15 +90,50 @@ async def main() -> None:
             except Exception as e:
                 logger.error("Gateway server error", error=str(e))
 
-        # Start both services
+        # Create Mail Agent task
+        async def run_mail_agent() -> None:
+            agent = None
+            try:
+                # Wait for Gateway and Email Server to be ready
+                logger.info("Waiting for Gateway and SMTP server to be ready...")
+                await asyncio.sleep(3)
+
+                logger.info("Creating Mail Agent instance")
+                agent = MailAgent(settings)
+
+                logger.info("Starting Mail Agent and registering with A2A registry")
+                await agent.start()
+
+                logger.info("Starting Mail Agent A2A server")
+                config = uvicorn.Config(
+                    agent.app,
+                    host=settings.host,
+                    port=settings.mail_agent_port,
+                    log_level=settings.log_level.lower(),
+                )
+                server = uvicorn.Server(config)
+                await server.serve()
+            except asyncio.CancelledError:
+                logger.info("Mail Agent task cancelled")
+                if agent is not None:
+                    await agent.shutdown()
+            except Exception as e:
+                logger.error("Mail Agent error", error=str(e))
+                if agent is not None:
+                    await agent.shutdown()
+
+        # Start all services
         tasks.append(asyncio.create_task(run_email_server()))
         tasks.append(asyncio.create_task(run_gateway()))
+        tasks.append(asyncio.create_task(run_mail_agent()))
 
         logger.info("All services started")
         logger.info(
             "Service endpoints",
-            gateway=f"http://{settings.host}:{settings.port}",
-            gateway_docs=f"http://{settings.host}:{settings.port}/docs",
+            gateway=f"http://{settings.host}:{settings.gateway_port}",
+            gateway_docs=f"http://{settings.host}:{settings.gateway_port}/docs",
+            mail_agent=f"http://{settings.host}:{settings.mail_agent_port}",
+            mail_agent_health=f"http://{settings.host}:{settings.mail_agent_port}/health",
             email_smtp=f"{settings.smtp_host}:{settings.smtp_port}",
             email_rest=f"http://{settings.host}:{settings.email_server_port}",
         )

@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(
         "Configuration loaded",
         host=settings.host,
-        port=settings.port,
+        port=settings.gateway_port,
         log_level=settings.log_level,
         debug=settings.debug,
     )
@@ -184,7 +184,7 @@ def _include_routers(app: FastAPI) -> None:
             "service": "info-agent-gateway",
             "config": {
                 "host": settings.host,
-                "port": settings.port,
+                "port": settings.gateway_port,
                 "debug": settings.debug,
             },
         }
@@ -233,13 +233,13 @@ async def main() -> None:
     logger.info(
         "Starting Info-Agent Gateway server",
         host=settings.host,
-        port=settings.port,
+        port=settings.gateway_port,
     )
 
     config = uvicorn.Config(
         app,
         host=settings.host,
-        port=settings.port,
+        port=settings.gateway_port,
         log_level=settings.log_level.lower(),
         reload=settings.debug,
     )

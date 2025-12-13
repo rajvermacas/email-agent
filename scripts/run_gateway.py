@@ -43,7 +43,7 @@ def main() -> None:
     logger.info(
         "Configuration",
         host=settings.host,
-        port=settings.port,
+        port=settings.gateway_port,
         debug=settings.debug,
         log_level=settings.log_level,
     )
