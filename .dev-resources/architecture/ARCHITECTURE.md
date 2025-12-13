@@ -1,972 +1,1675 @@
-# Info-Agent: Multi-Channel Information Retrieval System
+# Info-Agent System Architecture
 
-## Architecture Document
+## Executive Summary
 
-**Version**: 1.0
-**Date**: December 2025
-**Status**: Finalized Design
+Info-Agent is a multi-agent information retrieval and validation system that automates the process of requesting, collecting, clarifying, escalating, and validating information from external parties via email.
 
----
+### System Purpose
 
-## Table of Contents
+When an end user needs to collect specific information (documents, data, files) from another person:
+1. The system sends an email request to the target person
+2. Handles clarification questions using FAQ or escalates to the end user
+3. Escalates if the target person doesn't respond within configurable timeouts
+4. Validates received documents against specified criteria
+5. Provides real-time visibility into the entire process via a dashboard
 
-1. [Executive Summary](#1-executive-summary)
-2. [System Overview](#2-system-overview)
-3. [Functional Requirements](#3-functional-requirements)
-4. [Architecture Design](#4-architecture-design)
-5. [Component Details](#5-component-details)
-6. [Data Flow](#6-data-flow)
-7. [Technology Stack](#7-technology-stack)
-8. [Integration Points](#8-integration-points)
-9. [State Management](#9-state-management)
-10. [Security Considerations](#10-security-considerations)
-11. [Implementation Roadmap](#11-implementation-roadmap)
-12. [Best Practices](#12-best-practices)
-13. [Anti-Patterns to Avoid](#13-anti-patterns-to-avoid)
+### Key Capabilities
+
+- **Automated Email Communication**: Send requests, handle replies, manage threads
+- **Intelligent Clarification**: Answer questions using FAQ, escalate unknown queries
+- **Configurable Escalation**: Timeout-based escalation with retry logic (3 retries before escalate)
+- **Document Validation**: Validate received documents using LLM + Python execution
+- **Real-Time Dashboard**: Live visibility into agent execution and workflow state
+- **Full Audit Trail**: Complete history of all communications and decisions
 
 ---
 
-## 1. Executive Summary
+## Architecture Overview
 
-Info-Agent is a multi-channel agentic system designed to retrieve information through **Email** and **SharePoint** channels. The system enables autonomous, multi-turn conversations where an AI agent can:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              END USER INTERFACE                              │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │                    Real-Time Dashboard (AG-UI)                         │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                 │ │
+│  │  │ Plan View    │  │ Execution    │  │ Audit Log    │                 │ │
+│  │  │ & Approval   │  │ Status       │  │ & History    │                 │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘                 │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                    │                                         │
+│                                    │ AG-UI Events (SSE)                      │
+│                                    ▼                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     │ HTTP/SSE
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           FASTAPI GATEWAY                                    │
+│                                                                              │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
+│  │ /api/submit     │  │ /api/stream     │  │ /api/status     │             │
+│  │ (Start workflow)│  │ (AG-UI events)  │  │ (Query state)   │             │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                      SUPERVISOR AGENT (Embedded)                        ││
+│  │  ┌───────────────────────────────────────────────────────────────────┐ ││
+│  │  │                 LangGraph Orchestration Engine                     │ ││
+│  │  │                 (with SQLite Checkpointing)                        │ ││
+│  │  └───────────────────────────────────────────────────────────────────┘ ││
+│  │                                                                         ││
+│  │  • Read & parse input files (instructions, FAQ, escalation, validation)││
+│  │  • Query A2A Registry to discover available worker agents              ││
+│  │  • Generate execution plan & rearticulate for user approval            ││
+│  │  • Orchestrate worker agents (Mail, Validation) via A2A protocol       ││
+│  │  • Handle escalations, timeouts, and clarification routing             ││
+│  │  • Stream AG-UI events to frontend dashboard                           ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                                     │                                        │
+│                            Queries  │                                        │
+│                                     ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                        A2A REGISTRY SERVER                              ││
+│  │                                                                         ││
+│  │  • Maintains registry of available worker agents                       ││
+│  │  • Agent Cards (/.well-known/agent.json) for each agent                ││
+│  │  • Health monitoring and agent discovery                               ││
+│  │  • Only Supervisor queries this registry                               ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     │ A2A Protocol (HTTP/JSON)
+                    ┌────────────────┴────────────────┐
+                    │                                 │
+                    ▼                                 ▼
+┌───────────────────────────────────┐ ┌───────────────────────────────────────┐
+│         MAIL AGENT                │ │         VALIDATION AGENT              │
+│         (A2A Server)              │ │         (A2A Server)                  │
+│                                   │ │                                       │
+│  Worker agent - does NOT query    │ │  Worker agent - does NOT query        │
+│  A2A Registry. Only receives      │ │  A2A Registry. Only receives          │
+│  tasks from Supervisor.           │ │  tasks from Supervisor.               │
+│                                   │ │                                       │
+│  Responsibilities:                │ │  Responsibilities:                    │
+│  • Send emails via SMTP           │ │  • Validate received documents        │
+│  • Parse incoming email replies   │ │  • LLM analysis of content            │
+│  • Handle attachments             │ │  • Execute Python for complex         │
+│  • Track email threads            │ │    validation (large datasets)        │
+│  • Report results to Supervisor   │ │  • Generate validation reports        │
+│                                   │ │  • Report pass/fail to Supervisor     │
+│  Registers with A2A Registry      │ │                                       │
+│  on startup (one-time)            │ │  Registers with A2A Registry          │
+│                                   │ │  on startup (one-time)                │
+└───────────────────────────────────┘ └───────────────────────────────────────┘
+           │                                        │
+           │                                        │
+           ▼                                        │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        MOCK EMAIL SERVER                                     │
+│                                                                              │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
+│  │ SMTP Interface  │  │ Inbox Storage   │  │ Webhook Notifier│             │
+│  │ (Send emails)   │  │ (Per-user)      │  │ (New mail event)│             │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘             │
+│                                                                              │
+│  Web UI: View inboxes for raj@gmail.com, mrinal@gmail.com, etc.            │
+│                                                                              │
+│  Webhook notifications sent to Supervisor (via FastAPI Gateway)             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-- Send emails to employees requesting specific information
-- Handle clarifying questions from both sides (agent and recipient)
-- Automatically escalate to line managers when employees are on leave
-- Query SharePoint lists and documents when explicitly requested by the user
+### Architecture Key Points
 
-**Key Design Decisions**:
-- Channel selection (Email vs SharePoint) is **explicitly user-driven**, not agent-decided
-- Email conversations are **fully autonomous** with multi-turn support
-- Maximum 3 retries for failed email sends
-- Maximum 5 conversation exchanges before escalation
-- All interactions are audited
+1. **Supervisor Agent is INSIDE the FastAPI Gateway**: The Supervisor is not a separate A2A server. It is embedded within the FastAPI Gateway and uses LangGraph for workflow orchestration. This eliminates unnecessary network hops and simplifies deployment.
+
+2. **Hub-and-Spoke Topology**: The Supervisor acts as the central hub. Mail Agent and Validation Agent are worker spokes that only respond to tasks delegated by the Supervisor.
+
+3. **A2A Registry Access Pattern**:
+   - **Supervisor** → Queries the registry to discover available worker agents
+   - **Mail Agent** → Registers on startup, does NOT query the registry
+   - **Validation Agent** → Registers on startup, does NOT query the registry
+
+4. **Worker Agents are Stateless Task Executors**: Mail Agent and Validation Agent receive task requests from the Supervisor, execute them, and return results. They do not maintain complex state or make decisions about workflow progression.
 
 ---
 
-## 2. System Overview
+## Component Specifications
 
-### 2.1 High-Level Architecture
+### 1. Supervisor Agent (Embedded in FastAPI Gateway)
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              USER INTERFACE                                      │
-│  ┌───────────────────────────────────────────────────────────────────────────┐  │
-│  │                    CopilotKit + React (AG-UI Protocol)                    │  │
-│  │                    useCoAgent hook for streaming responses                │  │
-│  └───────────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           COPILOTKIT RUNTIME (FastAPI)                           │
-│                           AG-UI Protocol Handler                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           LANGGRAPH ORCHESTRATION                                │
-│  ┌───────────────────────────────────────────────────────────────────────────┐  │
-│  │                         SUPERVISOR AGENT                                   │  │
-│  │  • Parses user intent (Email vs SharePoint - user-driven)                 │  │
-│  │  • Routes to appropriate channel agent                                    │  │
-│  │  • Manages conversation lifecycle                                         │  │
-│  │  • Tracks request state (pending, in-progress, completed, failed)         │  │
-│  └───────────────────────────────────────────────────────────────────────────┘  │
-│                                        │                                         │
-│          ┌─────────────────────────────┼─────────────────────────────┐          │
-│          ▼                             ▼                             ▼          │
-│  ┌───────────────┐           ┌───────────────┐            ┌───────────────┐     │
-│  │  EMAIL AGENT  │           │  SHAREPOINT   │            │  DIRECTORY    │     │
-│  │  (Subgraph)   │           │    AGENT      │            │    AGENT      │     │
-│  │               │           │               │            │               │     │
-│  │ • Compose     │           │ • Query Lists │            │ • Lookup User │     │
-│  │ • Send        │           │ • Search Docs │            │ • Get Manager │     │
-│  │ • Converse    │           │ • Parse Data  │            │ • Check OOO   │     │
-│  │ • Extract     │           │               │            │               │     │
-│  │ • Retry (3x)  │           │               │            │               │     │
-│  └───────────────┘           └───────────────┘            └───────────────┘     │
-│          │                                                       │              │
-│          │              A2A Protocol (Inter-Agent)               │              │
-│          └───────────────────────────────────────────────────────┘              │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                            PERSISTENCE LAYER                                     │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────────┐  │
-│  │  PostgresSaver  │  │   Audit Log     │  │     Email Thread Store          │  │
-│  │  (Checkpoints)  │  │                 │  │   (Conversation Context)        │  │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                          MICROSOFT GRAPH API                                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │   Outlook   │  │ SharePoint  │  │  Azure AD   │  │  Calendar   │            │
-│  │    Mail     │  │    Sites    │  │   (Entra)   │  │   (OOO)     │            │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘            │
-│  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │     Webhook Subscriptions + Delta Query Fallback (Hybrid Pattern)       │    │
-│  └─────────────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
+**Purpose**: Central orchestrator that reads input files, creates execution plans, and coordinates worker agents. The Supervisor is **embedded within the FastAPI Gateway**, not a separate A2A server.
 
-### 2.2 Core Principles
+**Deployment**: Embedded within FastAPI Gateway (same process)
 
-1. **User-Driven Channel Selection**: The agent does NOT decide whether to use Email or SharePoint. The user explicitly specifies the channel.
-2. **Autonomous Conversations**: The email agent can autonomously handle multi-turn conversations with recipients.
-3. **Graceful Degradation**: If email fails, retry up to 3 times. If recipient is unavailable, escalate to manager.
-4. **Full Context Preservation**: All conversation history is maintained to prevent LLM performance degradation.
-5. **Audit Everything**: All requests, responses, and actions are logged for compliance.
+**Technology**:
+- Python 3.12+
+- LangGraph for workflow orchestration
+- LLM: OpenAI, Azure OpenAI, Google Gemini, or OpenRouter (configurable)
+- A2A SDK client for invoking worker agents
 
----
-
-## 3. Functional Requirements
-
-### 3.1 Email Channel
-
-| Requirement | Description |
-|-------------|-------------|
-| **Send Request** | Compose and send professional email requesting specific information |
-| **Monitor Replies** | Real-time monitoring via webhooks + delta query fallback |
-| **Parse Responses** | LLM-based extraction of relevant information from replies |
-| **Handle Clarifications** | Agent can answer clarifying questions from recipient |
-| **Ask Follow-ups** | Agent can request more information if response is insufficient |
-| **Escalation** | Auto-forward to line manager if recipient is OOO |
-| **Retry Logic** | 3 retries for failed email sends |
-| **Timeout** | 48-hour timeout, then escalate or notify user |
-| **Error Notification** | Email user on failures |
-
-### 3.2 SharePoint Channel
-
-| Requirement | Description |
-|-------------|-------------|
-| **Query Lists** | Retrieve data from SharePoint lists |
-| **Search Documents** | Search document libraries |
-| **Parse Content** | Extract relevant information from results |
-
-### 3.3 Directory Services
-
-| Requirement | Description |
-|-------------|-------------|
-| **User Lookup** | Resolve user names to email addresses |
-| **Manager Hierarchy** | Get user's direct manager for escalation |
-| **OOO Status** | Check calendar for Out-of-Office status |
-
-### 3.4 Audit & Logging
-
-| Requirement | Description |
-|-------------|-------------|
-| **Request Logging** | Who requested what information from whom |
-| **Action Logging** | All emails sent, responses received |
-| **Error Logging** | All failures with context |
-
----
-
-## 4. Architecture Design
-
-### 4.1 Protocol Stack
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    PROTOCOL RELATIONSHIPS                    │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  AG-UI Protocol                                             │
-│  └── User ←→ Frontend ←→ Backend                           │
-│      (Streaming responses, state sync, UI events)          │
-│                                                             │
-│  A2A Protocol                                               │
-│  └── Agent ←→ Agent                                        │
-│      (Email Agent ←→ Directory Agent)                      │
-│      (Supervisor ←→ Specialized Agents)                    │
-│                                                             │
-│  Microsoft Graph API                                        │
-│  └── Agent ←→ Microsoft 365                                │
-│      (Email, SharePoint, Calendar, Azure AD)               │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 4.2 Agent Architecture Pattern
-
-**Selected Pattern**: Supervisor + Specialized Agents + Subgraphs
-
-```
-                    ┌─────────────────┐
-                    │   Supervisor    │
-                    │    (LangGraph)  │
-                    └────────┬────────┘
-                             │
-            ┌────────────────┼────────────────┐
-            │                │                │
-       ┌────▼─────┐  ┌──────▼──────┐  ┌─────▼────┐
-       │  Email   │  │ SharePoint  │  │Directory │
-       │  Agent   │  │   Agent     │  │  Agent   │
-       │(Subgraph)│  │             │  │          │
-       └────┬─────┘  └──────┬──────┘  └─────┬────┘
-            │                │                │
-            └────────────────┼────────────────┘
-                             │
-                    ┌────────▼────────┐
-                    │ Consolidated    │
-                    │    Response     │
-                    └─────────────────┘
-```
-
-**Why This Pattern**:
-- Clear task specialization
-- Agents have focused responsibilities
-- Supervisor maintains oversight
-- Subgraphs provide modularity
-- Easy to add new channels
-
----
-
-## 5. Component Details
-
-### 5.1 Supervisor Agent
+**A2A Registry Interaction**:
+- **Queries** the A2A Registry to discover available worker agents
+- Does NOT register itself (it's not an external A2A server)
+- Uses discovered agent endpoints to delegate tasks
 
 **Responsibilities**:
-- Parse user intent to determine channel and target
-- Route requests to appropriate channel agent
-- Track overall request lifecycle
-- Aggregate final response to user
-- Handle cross-cutting concerns (timeout, escalation)
+1. **Input Processing**:
+   - Read and parse 4 input files (instructions, FAQ, escalation, validation)
+   - Extract structured requirements from natural language
 
-**Routing Logic**:
+2. **Plan Generation**:
+   - Query A2A Registry to discover available worker agents
+   - Create step-by-step execution plan showing which agents will be invoked
+   - Rearticulate requirements for user approval
+   - Allow user iteration on plan before execution
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    USER REQUEST PARSING                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  User: "Get employee list from Raj"                             │
-│         └──────────────────────────┘                            │
-│                    │                                            │
-│                    ▼                                            │
-│         ┌─────────────────────┐                                 │
-│         │   INTENT PARSER     │                                 │
-│         │   (LLM extracts)    │                                 │
-│         └─────────────────────┘                                 │
-│                    │                                            │
-│         ┌─────────┴─────────┐                                   │
-│         ▼                   ▼                                   │
-│  ┌─────────────┐     ┌─────────────┐                            │
-│  │  Channel:   │     │  Channel:   │                            │
-│  │   EMAIL     │     │ SHAREPOINT  │                            │
-│  │             │     │             │                            │
-│  │ Keywords:   │     │ Keywords:   │                            │
-│  │ "from Raj"  │     │ "from SP"   │                            │
-│  │ "ask X"     │     │ "in SharePoint"                          │
-│  │ "email to"  │     │ "SP list"   │                            │
-│  │ "contact"   │     │ "document"  │                            │
-│  └─────────────┘     └─────────────┘                            │
-│                                                                 │
-│  KEY: Channel is determined by USER'S explicit instruction      │
-│       NOT by agent's decision                                   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+3. **Orchestration**:
+   - Execute plan by delegating tasks to worker agents (Mail, Validation)
+   - Invoke agents via A2A protocol (HTTP/JSON)
+   - Handle inter-agent communication routing
+   - Manage state transitions via LangGraph
+   - Process escalation triggers
 
-### 5.2 Email Agent (Subgraph)
+4. **Escalation Handling**:
+   - Monitor timeout conditions (configurable, default 48 hours)
+   - Retry failed operations (3 times before escalate)
+   - Route escalations to appropriate contacts
+   - Handle clarification questions not in FAQ
 
-**Responsibilities**:
-- Compose contextual, professional emails
-- Send emails via Microsoft Graph
-- Monitor for replies (webhook + delta query)
-- Parse responses using LLM
-- Handle multi-turn conversations autonomously
-- Retry failed sends (max 3)
-- Escalate to manager if recipient OOO
+**Note**: The Supervisor does NOT have its own Agent Card since it is embedded within the gateway, not exposed as an A2A server.
 
-**State Machine**:
+**State Schema**:
+```python
+from typing import TypedDict, List, Optional
+from enum import Enum
 
-```
-                              ┌─────────────────┐
-                              │     START       │
-                              └────────┬────────┘
-                                       │
-                                       ▼
-                              ┌─────────────────┐
-                              │ COMPOSE_EMAIL   │
-                              │ (LLM generates  │
-                              │  contextual     │
-                              │  request)       │
-                              └────────┬────────┘
-                                       │
-                                       ▼
-                              ┌─────────────────┐
-                              │  SEND_EMAIL     │◀──────────────────┐
-                              │  (Graph API)    │                   │
-                              └────────┬────────┘                   │
-                                       │                            │
-                          ┌────────────┴────────────┐               │
-                          ▼                         ▼               │
-                   ┌─────────────┐          ┌─────────────┐         │
-                   │   SUCCESS   │          │   FAILED    │         │
-                   └──────┬──────┘          └──────┬──────┘         │
-                          │                        │                │
-                          │                        ▼                │
-                          │               ┌─────────────┐           │
-                          │               │   RETRY     │           │
-                          │               │ (max 3x)    │───────────┘
-                          │               └──────┬──────┘
-                          │                      │ (exhausted)
-                          │                      ▼
-                          │               ┌─────────────┐
-                          │               │NOTIFY_USER_ │
-                          │               │  FAILURE    │
-                          │               └─────────────┘
-                          ▼
-                 ┌─────────────────┐
-                 │ AWAIT_REPLY    │
-                 │ (Webhook/Poll) │
-                 │ Timeout: 48hrs │
-                 └────────┬───────┘
-                          │
-            ┌─────────────┼─────────────┐
-            ▼             │             ▼
-    ┌─────────────┐       │     ┌─────────────┐
-    │  TIMEOUT    │       │     │REPLY_RECEIVED│
-    │ (Escalate   │       │     └──────┬──────┘
-    │ to Manager) │       │            │
-    └─────────────┘       │            ▼
-                          │   ┌─────────────────┐
-                          │   │ ANALYZE_REPLY   │
-                          │   │ (LLM parsing)   │
-                          │   └────────┬────────┘
-                          │            │
-                          │  ┌─────────┴─────────┬────────────────┐
-                          │  ▼                   ▼                ▼
-                          │ ┌──────────┐  ┌──────────────┐  ┌──────────────┐
-                          │ │SATISFACTORY│ │CLARIFICATION│  │INSUFFICIENT  │
-                          │ │ ANSWER    │  │ NEEDED BY   │  │ RESPONSE     │
-                          │ │           │  │  RECIPIENT  │  │              │
-                          │ └─────┬─────┘  └──────┬──────┘  └──────┬───────┘
-                          │       │               │                │
-                          │       ▼               ▼                ▼
-                          │ ┌──────────┐  ┌──────────────┐  ┌──────────────┐
-                          │ │ EXTRACT  │  │ AUTO_REPLY   │  │ ASK_MORE     │
-                          │ │ & RETURN │  │ (Answer      │  │ (Agent asks  │
-                          │ │ TO USER  │  │  recipient's │  │ recipient    │
-                          │ └──────────┘  │  questions)  │  │ for more)    │
-                          │               └──────┬───────┘  └──────┬───────┘
-                          │                      │                 │
-                          │                      └────────┬────────┘
-                          │                               │
-                          └───────────────────────────────┘
-                                    (Loop back to AWAIT_REPLY)
-                                    (Max 5 exchanges)
-```
+class WorkflowStatus(str, Enum):
+    PLANNING = "planning"
+    AWAITING_APPROVAL = "awaiting_approval"
+    EXECUTING = "executing"
+    WAITING_FOR_RESPONSE = "waiting_for_response"
+    ESCALATED = "escalated"
+    VALIDATING = "validating"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
-### 5.3 SharePoint Agent
+class SupervisorState(TypedDict):
+    # Input files content
+    instructions: str
+    faq: str
+    escalation_rules: str
+    validation_criteria: str
 
-**Responsibilities**:
-- Query SharePoint lists based on user criteria
-- Search document libraries
-- Parse and extract relevant data
-- Return structured results
+    # Parsed requirements
+    target_email: str
+    target_name: str
+    requested_info: str
+    timeout_hours: int
+    retry_count: int
+    max_retries: int
 
-**Invocation**: Only when user explicitly requests SharePoint
+    # Execution state
+    status: WorkflowStatus
+    plan: List[dict]
+    current_step: int
 
-### 5.4 Directory Agent
+    # Communication tracking
+    email_threads: List[dict]
+    clarification_history: List[dict]
 
-**Responsibilities**:
-- Resolve user names to email addresses (Azure AD)
-- Fetch manager hierarchy for escalation
-- Check OOO/calendar status
+    # Results
+    received_documents: List[dict]
+    validation_result: Optional[dict]
 
-**Used By**: Email Agent (before sending, for escalation)
-
----
-
-## 6. Data Flow
-
-### 6.1 Email Channel Flow (Happy Path)
-
-```
-User                 Supervisor         Email Agent        Directory Agent      MS Graph
- │                       │                   │                   │                 │
- │  "Get employee        │                   │                   │                 │
- │   list from Raj"      │                   │                   │                 │
- │──────────────────────▶│                   │                   │                 │
- │                       │                   │                   │                 │
- │                       │  Route to Email   │                   │                 │
- │                       │──────────────────▶│                   │                 │
- │                       │                   │                   │                 │
- │                       │                   │  Resolve "Raj"    │                 │
- │                       │                   │──────────────────▶│                 │
- │                       │                   │                   │  Azure AD Query │
- │                       │                   │                   │────────────────▶│
- │                       │                   │                   │◀────────────────│
- │                       │                   │◀──────────────────│  raj@company.com│
- │                       │                   │                   │                 │
- │                       │                   │  Check OOO        │                 │
- │                       │                   │──────────────────▶│                 │
- │                       │                   │                   │  Calendar Query │
- │                       │                   │                   │────────────────▶│
- │                       │                   │◀──────────────────│  Available      │
- │                       │                   │                   │                 │
- │                       │                   │  Compose & Send Email              │
- │                       │                   │─────────────────────────────────────▶│
- │                       │                   │                                     │
- │                       │                   │  [AWAIT REPLY - Webhook]            │
- │                       │                   │◀─────────────────────────────────────│
- │                       │                   │                   │  Reply received │
- │                       │                   │                   │                 │
- │                       │                   │  Parse & Extract  │                 │
- │                       │                   │  (LLM)            │                 │
- │                       │                   │                   │                 │
- │                       │◀──────────────────│  Satisfactory     │                 │
- │                       │                   │                   │                 │
- │◀──────────────────────│  Return Result    │                   │                 │
- │  "Employee list:..."  │                   │                   │                 │
-```
-
-### 6.2 Email Channel Flow (Escalation Path)
-
-```
-User                 Supervisor         Email Agent        Directory Agent      MS Graph
- │                       │                   │                   │                 │
- │  "Get info from Raj"  │                   │                   │                 │
- │──────────────────────▶│                   │                   │                 │
- │                       │──────────────────▶│                   │                 │
- │                       │                   │──────────────────▶│                 │
- │                       │                   │◀──────────────────│  raj@company.com│
- │                       │                   │──────────────────▶│                 │
- │                       │                   │◀──────────────────│  OOO = TRUE     │
- │                       │                   │                   │                 │
- │                       │                   │  Get Manager      │                 │
- │                       │                   │──────────────────▶│                 │
- │                       │                   │◀──────────────────│ manager@co.com  │
- │                       │                   │                   │                 │
- │                       │                   │  Check Manager OOO│                 │
- │                       │                   │──────────────────▶│                 │
- │                       │                   │◀──────────────────│  Available      │
- │                       │                   │                   │                 │
- │                       │                   │  Send to Manager  │                 │
- │                       │                   │─────────────────────────────────────▶│
- │                       │                   │  (Note: Raj is OOO)                 │
- │                       │                   │                   │                 │
- │                       │                   │  ... continue flow ...              │
-```
-
-### 6.3 Multi-Turn Conversation Flow
-
-```
-Email Agent                          Raj (Recipient)                    LLM
-    │                                      │                             │
-    │  Email: "Please provide             │                             │
-    │   employee list for Engineering"     │                             │
-    │─────────────────────────────────────▶│                             │
-    │                                      │                             │
-    │  Reply: "Which location?            │                             │
-    │   We have NY, SF, and London"        │                             │
-    │◀─────────────────────────────────────│                             │
-    │                                      │                             │
-    │  Analyze Reply ─────────────────────────────────────────────────────▶│
-    │◀─────────────────────────────────────────────────────────────────────│
-    │  Result: CLARIFICATION_NEEDED        │                             │
-    │                                      │                             │
-    │  [Agent uses original context        │                             │
-    │   to formulate response]             │                             │
-    │                                      │                             │
-    │  Reply: "All locations please"      │                             │
-    │─────────────────────────────────────▶│                             │
-    │                                      │                             │
-    │  Reply: "Here's the list:           │                             │
-    │   NY: Alice, Bob...                  │                             │
-    │   SF: Carol, Dave..."                │                             │
-    │◀─────────────────────────────────────│                             │
-    │                                      │                             │
-    │  Analyze Reply ─────────────────────────────────────────────────────▶│
-    │◀─────────────────────────────────────────────────────────────────────│
-    │  Result: SATISFACTORY                │                             │
-    │                                      │                             │
-    │  Extract & Return to User            │                             │
+    # Audit
+    audit_log: List[dict]
+    created_at: str
+    updated_at: str
 ```
 
 ---
 
-## 7. Technology Stack
+### 2. Mail Agent (Worker A2A Server)
 
-### 7.1 Core Technologies
+**Purpose**: Handles all email operations including sending, receiving, parsing, and attachment handling. This is a **worker agent** that receives tasks from the Supervisor.
 
-| Layer | Technology | Version | Purpose |
-|-------|------------|---------|---------|
-| **Frontend** | React | 18+ | User interface |
-| **Frontend Framework** | CopilotKit | CoAgents v0.2 | Agent UI components, AG-UI protocol |
-| **Backend** | FastAPI | Latest | API server, webhook handler |
-| **Orchestration** | LangGraph | v0.2+ | Agent orchestration, state machine |
-| **Agent Protocol** | A2A | v1.0.0 | Inter-agent communication |
-| **UI Protocol** | AG-UI | Latest | Frontend-agent streaming |
-| **State Persistence** | PostgreSQL | 15+ | Checkpointing, audit logs |
-| **Checkpointer** | PostgresSaver | Latest | LangGraph state persistence |
-| **Observability** | LangSmith | Latest | Tracing, debugging |
-| **LLM** | Azure OpenAI | GPT-4 | Intent parsing, email composition |
+**Deployment**: Separate A2A server (independent process)
 
-### 7.2 Microsoft Integration
+**Technology**:
+- Python 3.12+
+- A2A SDK for agent protocol (server mode)
+- Mock SMTP client for email sending
+- Email parsing libraries (email, mimetypes)
 
-| Service | API | Purpose |
-|---------|-----|---------|
-| **Outlook** | Microsoft Graph | Send/receive emails |
-| **SharePoint** | Microsoft Graph | Query lists, search docs |
-| **Azure AD (Entra)** | Microsoft Graph | User lookup, manager hierarchy |
-| **Calendar** | Microsoft Graph | OOO status |
+**A2A Registry Interaction**:
+- **Registers** with the A2A Registry on startup (one-time)
+- Does **NOT query** the registry (only the Supervisor does that)
+- Receives tasks exclusively from the Supervisor via A2A protocol
 
-### 7.3 Python Dependencies
+**Responsibilities**:
+1. **Email Sending**:
+   - Compose and send emails based on templates
+   - Handle multiple recipients (parallel requests)
+   - Track sent messages with unique thread IDs
 
-```
-langgraph>=0.2.0
-langchain>=0.1.0
-langchain-openai>=0.0.5
-copilotkit>=0.1.0
-fastapi>=0.109.0
-uvicorn>=0.27.0
-msgraph-sdk>=1.0.0
-azure-identity>=1.15.0
-psycopg2-binary>=2.9.9
-sqlalchemy>=2.0.0
-pydantic>=2.5.0
-python-dotenv>=1.0.0
-```
+2. **Email Receiving** (via webhook from Mock Email Server → Supervisor):
+   - Process incoming email notifications forwarded by Supervisor
+   - Parse email content and attachments
+   - Extract structured data from replies
 
-### 7.4 Frontend Dependencies
+3. **Thread Management**:
+   - Maintain conversation threads
+   - Track reply chains
+   - Identify clarification questions vs. final responses
 
+4. **Attachment Handling**:
+   - Download and store attachments
+   - Extract file metadata
+   - Support all file types (no size limits for POC)
+
+**Agent Card**:
 ```json
 {
-  "@copilotkit/react-core": "^0.1.72",
-  "@copilotkit/react-ui": "^0.1.72",
-  "react": "^18.2.0",
-  "react-dom": "^18.2.0"
+  "name": "mail-agent",
+  "description": "Email communication agent for sending and receiving messages",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true
+  },
+  "skills": [
+    {
+      "id": "send-email",
+      "name": "Send Email",
+      "description": "Sends email to specified recipient with optional attachments"
+    },
+    {
+      "id": "parse-email",
+      "name": "Parse Email",
+      "description": "Parses incoming email content and attachments"
+    },
+    {
+      "id": "check-inbox",
+      "name": "Check Inbox",
+      "description": "Checks for new emails in monitored inbox"
+    }
+  ],
+  "defaultInputModes": ["text"],
+  "defaultOutputModes": ["text", "file"]
+}
+```
+
+**State Schema**:
+```python
+class EmailMessage(TypedDict):
+    id: str
+    thread_id: str
+    from_address: str
+    to_address: str
+    subject: str
+    body: str
+    html_body: Optional[str]
+    attachments: List[dict]
+    sent_at: str
+    received_at: Optional[str]
+    is_reply: bool
+    in_reply_to: Optional[str]
+
+class MailAgentState(TypedDict):
+    pending_sends: List[EmailMessage]
+    sent_emails: List[EmailMessage]
+    received_emails: List[EmailMessage]
+    active_threads: dict  # thread_id -> thread metadata
+    attachment_storage: str  # path to attachment storage
+```
+
+---
+
+### 3. Validation Agent (Worker A2A Server)
+
+**Purpose**: Validates received documents against specified criteria using LLM analysis and Python execution. This is a **worker agent** that receives tasks from the Supervisor.
+
+**Deployment**: Separate A2A server (independent process)
+
+**Technology**:
+- Python 3.12+
+- A2A SDK for agent protocol (server mode)
+- LLM for document analysis
+- Subprocess with timeout for Python execution
+- Restricted imports for security
+
+**A2A Registry Interaction**:
+- **Registers** with the A2A Registry on startup (one-time)
+- Does **NOT query** the registry (only the Supervisor does that)
+- Receives tasks exclusively from the Supervisor via A2A protocol
+
+**Responsibilities**:
+1. **Document Analysis**:
+   - Parse document content (Excel, CSV, PDF, etc.)
+   - Extract structure and metadata
+   - Summarize large documents using LLM
+
+2. **Criteria Validation**:
+   - Compare document against validation criteria
+   - Check for required fields, row counts, data types
+   - Generate detailed validation report
+
+3. **Python Execution**:
+   - Write and execute Python scripts for complex validation
+   - Analyze large datasets programmatically
+   - Timeout protection (30 seconds default)
+   - Restricted imports (pandas, numpy, json, csv only)
+
+4. **Result Reporting**:
+   - Generate pass/fail verdict with justification
+   - Create detailed validation report
+   - Return results to Supervisor (who notifies end user)
+
+**Agent Card**:
+```json
+{
+  "name": "validation-agent",
+  "description": "Document validation agent with Python execution capabilities",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true
+  },
+  "skills": [
+    {
+      "id": "validate-document",
+      "name": "Validate Document",
+      "description": "Validates document against specified criteria"
+    },
+    {
+      "id": "execute-python",
+      "name": "Execute Python",
+      "description": "Executes Python code for complex validation logic"
+    },
+    {
+      "id": "generate-report",
+      "name": "Generate Report",
+      "description": "Generates detailed validation report"
+    }
+  ],
+  "defaultInputModes": ["text", "file"],
+  "defaultOutputModes": ["text"]
+}
+```
+
+**State Schema**:
+```python
+class ValidationResult(TypedDict):
+    document_id: str
+    document_name: str
+    criteria_checked: List[dict]
+    passed: bool
+    score: float  # 0.0 to 1.0
+    issues: List[str]
+    recommendations: List[str]
+    python_analysis: Optional[str]
+    validated_at: str
+
+class ValidationAgentState(TypedDict):
+    pending_validations: List[dict]
+    completed_validations: List[ValidationResult]
+    python_execution_log: List[dict]
+```
+
+---
+
+### 4. A2A Registry Server
+
+**Purpose**: Central registry that maintains information about all available worker agents and their capabilities. Embedded within the FastAPI Gateway.
+
+**Deployment**: Embedded within FastAPI Gateway (same process as Supervisor)
+
+**Technology**:
+- Python 3.12+
+- FastAPI for HTTP endpoints
+- In-memory storage (SQLite for persistence)
+
+**Access Pattern**:
+- **Supervisor** → Queries the registry to discover worker agents
+- **Worker Agents** (Mail, Validation) → Register on startup, never query
+- Worker agents call `POST /agents/register` once on startup
+
+**Responsibilities**:
+1. **Agent Registration** (called by Worker Agents):
+   - Accept agent registration with Agent Cards
+   - Validate Agent Card schema
+   - Store agent metadata and endpoints
+
+2. **Agent Discovery** (called by Supervisor only):
+   - Provide searchable list of registered worker agents
+   - Filter by capabilities and skills
+   - Return agent endpoints and metadata
+
+3. **Health Monitoring**:
+   - Track agent availability via periodic health checks
+   - Remove stale registrations
+   - Provide health status
+
+**API Endpoints**:
+```
+POST   /agents/register       - Register new agent (Worker Agents call this)
+GET    /agents                - List all agents (Supervisor calls this)
+GET    /agents/{agent_id}     - Get agent details (Supervisor calls this)
+GET    /agents/search?skill=  - Search by skill (Supervisor calls this)
+DELETE /agents/{agent_id}     - Deregister agent
+GET    /health                - Registry health check
+```
+
+---
+
+### 5. Mock Email Server
+
+**Purpose**: Simulates email infrastructure for development and demo purposes.
+
+**Technology**:
+- Python 3.12+
+- FastAPI for HTTP/REST API
+- aiosmtpd for SMTP interface
+- SQLite for email storage
+- WebSocket for real-time inbox updates
+
+**Components**:
+
+1. **SMTP Interface** (Port 1025):
+   - Accept outgoing emails from Mail Agent
+   - Store in recipient's inbox
+   - Trigger webhook notifications
+
+2. **REST API**:
+   ```
+   GET    /inboxes                    - List all inboxes
+   GET    /inboxes/{email}/messages   - Get messages for inbox
+   GET    /messages/{message_id}      - Get specific message
+   POST   /messages/{message_id}/reply - Send reply (simulate user)
+   DELETE /messages/{message_id}      - Delete message
+   GET    /attachments/{attachment_id} - Download attachment
+   ```
+
+3. **Webhook Notifier**:
+   - POST to configured webhook URL on new email
+   - Payload includes message metadata and thread info
+   - Retry logic for failed deliveries
+
+4. **Web UI** (for demo):
+   - View all inboxes (raj@gmail.com, mrinal@gmail.com, etc.)
+   - Read emails with formatting
+   - Compose and send replies
+   - Upload attachments
+   - Real-time updates via WebSocket
+
+**Email Storage Schema**:
+```python
+class StoredEmail(TypedDict):
+    id: str
+    inbox: str  # email address
+    thread_id: str
+    from_address: str
+    to_address: str
+    subject: str
+    body_text: str
+    body_html: Optional[str]
+    attachments: List[dict]  # [{id, filename, content_type, size, path}]
+    received_at: str
+    read: bool
+    starred: bool
+    labels: List[str]
+```
+
+---
+
+### 6. FastAPI Gateway
+
+**Purpose**: Main entry point for the system, handles HTTP requests and streams AG-UI events.
+
+**Technology**:
+- Python 3.12+
+- FastAPI 0.104+
+- AG-UI SDK (ag-ui-protocol, ag-ui-langgraph)
+- LangGraph for workflow management
+- SQLite for checkpointing
+
+**Endpoints**:
+
+```python
+# Workflow Management
+POST   /api/workflows              - Create new workflow
+GET    /api/workflows              - List all workflows
+GET    /api/workflows/{id}         - Get workflow details
+POST   /api/workflows/{id}/approve - Approve execution plan
+POST   /api/workflows/{id}/cancel  - Cancel workflow
+
+# Real-time Streaming (AG-UI)
+POST   /api/workflows/{id}/stream  - Stream AG-UI events (SSE)
+
+# Status and Queries
+GET    /api/workflows/{id}/status  - Get current status
+GET    /api/workflows/{id}/audit   - Get audit log
+GET    /api/workflows/{id}/emails  - Get email history
+
+# File Management
+POST   /api/workflows/{id}/files   - Upload input files
+GET    /api/workflows/{id}/files   - List uploaded files
+GET    /api/files/{file_id}        - Download file
+
+# Webhook Receivers
+POST   /webhooks/email             - Receive email notifications
+POST   /webhooks/agent             - Receive agent notifications
+
+# Health
+GET    /health                     - System health check
+```
+
+---
+
+### 7. Real-Time Dashboard (Frontend)
+
+**Purpose**: Provides real-time visibility into workflow execution for end users.
+
+**Technology**:
+- HTML5 + Tailwind CSS 4.0+
+- HTMX 1.9+ for dynamic updates
+- Vanilla JavaScript for AG-UI event handling
+- Server-Sent Events (SSE) for streaming
+
+**Views**:
+
+1. **Workflow Creation View**:
+   - File upload for 4 input files
+   - Preview parsed requirements
+   - Submit for planning
+
+2. **Plan Approval View**:
+   - Display rearticulated requirements
+   - Show execution plan steps
+   - Approve/Request Changes buttons
+   - Iterate on plan before execution
+
+3. **Execution Dashboard View**:
+   - Real-time status updates
+   - Current step indicator
+   - Agent activity log
+   - Email thread viewer
+   - Countdown timer for timeouts
+
+4. **Validation Results View**:
+   - Pass/Fail status
+   - Detailed validation report
+   - Document preview
+   - Issues and recommendations
+
+5. **Audit Log View**:
+   - Complete history of all actions
+   - Filter by event type
+   - Export functionality
+
+**AG-UI Event Handling**:
+```javascript
+// Connect to AG-UI event stream
+const eventSource = new EventSource(`/api/workflows/${workflowId}/stream`);
+
+eventSource.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    switch(data.type) {
+        case 'RUN_STARTED':
+            showExecutionStarted();
+            break;
+        case 'TEXT_MESSAGE_CONTENT':
+            appendAgentMessage(data.content);
+            break;
+        case 'TOOL_CALL_START':
+            showToolExecution(data.tool_name);
+            break;
+        case 'STATE_DELTA':
+            updateWorkflowState(data.delta);
+            break;
+        case 'RUN_FINISHED':
+            showExecutionComplete();
+            break;
+        case 'RUN_ERROR':
+            showError(data.error);
+            break;
+    }
+};
+```
+
+---
+
+## Data Flow Diagrams
+
+### Flow 1: Workflow Creation and Planning
+
+```
+┌──────────┐     ┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
+│ End User │────▶│ Dashboard UI │────▶│ FastAPI Gateway │────▶│  Supervisor  │
+└──────────┘     └──────────────┘     └─────────────────┘     │    Agent     │
+     │                                        │                └──────────────┘
+     │ 1. Upload 4 files                      │                       │
+     │    (instructions, FAQ,                 │                       │
+     │     escalation, validation)            │                       │
+     │                                        │                       │
+     │                                        │ 2. Store files        │
+     │                                        │    Create workflow    │
+     │                                        │                       │
+     │                                        │ 3. Invoke Supervisor ─┘
+     │                                        │
+     │                                        │         ┌─────────────────┐
+     │                                        │◀────────│  A2A Registry   │
+     │                                        │         │  (Agent lookup) │
+     │                                        │         └─────────────────┘
+     │                                        │
+     │ 4. Stream plan via AG-UI              │◀──────── Plan generated
+     │◀───────────────────────────────────────│
+     │                                        │
+     │ 5. Review & Approve/Iterate            │
+     │────────────────────────────────────────▶
+```
+
+### Flow 2: Email Request and Response
+
+```
+┌─────────────────┐     ┌─────────────┐     ┌────────────────┐     ┌─────────────┐
+│   Supervisor    │────▶│ Mail Agent  │────▶│ Mock Email Srv │────▶│  Target     │
+│     Agent       │     │             │     │                │     │  Person     │
+└─────────────────┘     └─────────────┘     └────────────────┘     │ (raj@...)   │
+                                                   │                └─────────────┘
+1. Request send email                              │                      │
+   to raj@gmail.com                                │                      │
+                        2. Compose email           │                      │
+                           Send via SMTP           │                      │
+                                                   │                      │
+                                            3. Store in inbox            │
+                                               Trigger webhook           │
+                                                   │                      │
+                                                   │  4. View email       │
+                                                   │◀─────────────────────│
+                                                   │                      │
+                                                   │  5. Reply with       │
+                                                   │     attachment       │
+                                                   │◀─────────────────────│
+                                                   │
+                        6. Webhook notification    │
+                        ◀──────────────────────────│
+
+7. Process reply
+   Extract attachment
+   Notify Supervisor
+```
+
+### Flow 3: Clarification Handling
+
+```
+┌─────────────────┐     ┌─────────────┐     ┌─────────────────┐     ┌──────────┐
+│   Mail Agent    │────▶│ Supervisor  │────▶│   Dashboard     │────▶│ End User │
+│  (receives Q)   │     │   Agent     │     │   (AG-UI)       │     │ (mrinal) │
+└─────────────────┘     └─────────────┘     └─────────────────┘     └──────────┘
+        │                      │                     │                    │
+        │ 1. Receive question  │                     │                    │
+        │    from raj@gmail    │                     │                    │
+        │─────────────────────▶│                     │                    │
+        │                      │                     │                    │
+        │               2. Check FAQ                 │                    │
+        │               ┌──────┴──────┐              │                    │
+        │               │             │              │                    │
+        │          Found?        Not Found           │                    │
+        │               │             │              │                    │
+        │               ▼             ▼              │                    │
+        │         3a. Answer    3b. Escalate         │                    │
+        │◀──────── from FAQ     to end user ────────▶│                    │
+        │                             │              │                    │
+        │                             │         4. Notify                 │
+        │                             │            via AG-UI ────────────▶│
+        │                             │              │                    │
+        │                             │              │    5. Provide      │
+        │                             │              │       answer       │
+        │                             │              │◀───────────────────│
+        │                             │              │                    │
+        │◀────────────────────────────│──────────────│                    │
+        │         6. Send answer                     │                    │
+        │            to raj@gmail                    │                    │
+```
+
+### Flow 4: Timeout and Escalation
+
+```
+┌─────────────────┐     ┌───────────────┐     ┌─────────────────┐
+│   Supervisor    │────▶│  Escalation   │────▶│   Mail Agent    │
+│     Agent       │     │    Logic      │     │                 │
+└─────────────────┘     └───────────────┘     └─────────────────┘
+        │                      │                       │
+        │ 1. Monitor timeout   │                       │
+        │    (48 hours cfg)    │                       │
+        │──────────────────────▶                       │
+        │                      │                       │
+        │               2. Timeout reached             │
+        │                      │                       │
+        │               3. Check retry count           │
+        │               ┌──────┴──────┐                │
+        │               │             │                │
+        │          < 3 retries   >= 3 retries          │
+        │               │             │                │
+        │               ▼             ▼                │
+        │         4a. Retry     4b. Escalate           │
+        │         same person   to vishal@gmail ──────▶│
+        │               │             │                │
+        │               │       5. Send escalation     │
+        │               │          email               │
+        │◀──────────────│◀─────────────────────────────│
+        │                                              │
+        │ 6. Update state, log audit                   │
+```
+
+### Flow 5: Document Validation
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Supervisor    │────▶│  Validation    │────▶│   Dashboard     │
+│     Agent       │     │    Agent       │     │   (Results)     │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+        │                      │                       │
+        │ 1. Send document     │                       │
+        │    + criteria        │                       │
+        │──────────────────────▶                       │
+        │                      │                       │
+        │               2. Parse document              │
+        │                      │                       │
+        │               3. LLM Analysis                │
+        │                  (structure, content)        │
+        │                      │                       │
+        │               4. Python Execution            │
+        │                  (if needed for             │
+        │                   large datasets)           │
+        │                      │                       │
+        │               5. Compare vs criteria         │
+        │                      │                       │
+        │               6. Generate report             │
+        │                  ┌───┴───┐                   │
+        │                  │       │                   │
+        │               PASS     FAIL                  │
+        │                  │       │                   │
+        │◀─────────────────┴───────┘                   │
+        │                                              │
+        │ 7. Stream results via AG-UI ─────────────────▶
+        │                                              │
+        │ 8. If FAIL: Email end user                   │
+        │    with validation report                    │
+```
+
+---
+
+## LangGraph Workflow Design
+
+### Main Workflow Graph
+
+```python
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+# Define the workflow graph
+workflow = StateGraph(SupervisorState)
+
+# Add nodes
+workflow.add_node("parse_inputs", parse_input_files)
+workflow.add_node("lookup_agents", query_a2a_registry)
+workflow.add_node("generate_plan", create_execution_plan)
+workflow.add_node("await_approval", wait_for_user_approval)
+workflow.add_node("execute_step", execute_current_step)
+workflow.add_node("send_email", invoke_mail_agent)
+workflow.add_node("wait_response", wait_for_email_response)
+workflow.add_node("handle_clarification", process_clarification)
+workflow.add_node("check_timeout", evaluate_timeout)
+workflow.add_node("escalate", perform_escalation)
+workflow.add_node("validate_document", invoke_validation_agent)
+workflow.add_node("report_results", generate_final_report)
+
+# Define edges
+workflow.set_entry_point("parse_inputs")
+
+workflow.add_edge("parse_inputs", "lookup_agents")
+workflow.add_edge("lookup_agents", "generate_plan")
+workflow.add_edge("generate_plan", "await_approval")
+
+workflow.add_conditional_edges(
+    "await_approval",
+    check_approval_status,
+    {
+        "approved": "execute_step",
+        "rejected": "generate_plan",  # Allow iteration
+        "cancelled": END
+    }
+)
+
+workflow.add_conditional_edges(
+    "execute_step",
+    determine_next_action,
+    {
+        "send_email": "send_email",
+        "validate": "validate_document",
+        "complete": "report_results"
+    }
+)
+
+workflow.add_edge("send_email", "wait_response")
+
+workflow.add_conditional_edges(
+    "wait_response",
+    check_response_type,
+    {
+        "document_received": "validate_document",
+        "clarification_needed": "handle_clarification",
+        "timeout": "check_timeout",
+        "error": "escalate"
+    }
+)
+
+workflow.add_conditional_edges(
+    "handle_clarification",
+    check_faq_match,
+    {
+        "found_in_faq": "send_email",  # Reply with FAQ answer
+        "not_in_faq": "escalate"  # Escalate to end user
+    }
+)
+
+workflow.add_conditional_edges(
+    "check_timeout",
+    evaluate_retry_count,
+    {
+        "retry": "send_email",  # Retry (< 3 attempts)
+        "escalate": "escalate"  # Escalate (>= 3 attempts)
+    }
+)
+
+workflow.add_edge("escalate", "wait_response")
+
+workflow.add_conditional_edges(
+    "validate_document",
+    check_validation_result,
+    {
+        "passed": "report_results",
+        "failed": "report_results"  # Report failure
+    }
+)
+
+workflow.add_edge("report_results", END)
+
+# Configure checkpointing with SQLite
+checkpointer = SqliteSaver.from_conn_string("sqlite:///data/checkpoints.db")
+
+# Compile workflow
+app = workflow.compile(checkpointer=checkpointer)
+```
+
+### Checkpointing Configuration
+
+```python
+from langgraph.checkpoint.sqlite import SqliteSaver
+import sqlite3
+
+# Initialize SQLite checkpointer
+def create_checkpointer():
+    """Create SQLite checkpointer for workflow state persistence."""
+    conn = sqlite3.connect("data/checkpoints.db", check_same_thread=False)
+
+    # Create tables if not exist
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            thread_id TEXT NOT NULL,
+            checkpoint_id TEXT NOT NULL,
+            parent_id TEXT,
+            checkpoint BLOB NOT NULL,
+            metadata BLOB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (thread_id, checkpoint_id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_thread_id
+        ON checkpoints(thread_id)
+    """)
+
+    conn.commit()
+
+    return SqliteSaver(conn)
+
+# Usage in FastAPI
+checkpointer = create_checkpointer()
+
+async def run_workflow(workflow_id: str, inputs: dict):
+    """Run workflow with checkpointing."""
+    config = {
+        "configurable": {
+            "thread_id": workflow_id
+        }
+    }
+
+    async for event in app.astream(inputs, config):
+        yield event  # Stream to AG-UI
+```
+
+---
+
+## Technology Stack
+
+### Backend
+
+| Component | Technology | Version | Purpose |
+|-----------|------------|---------|---------|
+| Runtime | Python | 3.12+ | Primary language |
+| Web Framework | FastAPI | 0.104+ | HTTP API, SSE streaming |
+| Agent Protocol | Google A2A SDK | Latest | Agent-to-agent communication |
+| Workflow Engine | LangGraph | 0.1+ | Workflow orchestration |
+| Checkpointing | SQLite | 3.x | State persistence |
+| LLM Integration | LangChain | Latest | LLM abstraction (multi-provider) |
+| LLM Providers | OpenAI, Azure OpenAI, Gemini, OpenRouter | Latest | Configurable LLM backends |
+| AG-UI Protocol | ag-ui-protocol | 0.4+ | Frontend event streaming |
+| Email (Mock) | aiosmtpd | Latest | Mock SMTP server |
+| Async | asyncio | Built-in | Async operations |
+| Validation | Pydantic | 2.0+ | Data validation |
+
+### Frontend
+
+| Component | Technology | Version | Purpose |
+|-----------|------------|---------|---------|
+| Markup | HTML5 | - | Structure |
+| Styling | Tailwind CSS | 4.0+ | Utility-first CSS |
+| Interactivity | HTMX | 1.9+ | Dynamic updates |
+| Real-time | SSE (EventSource) | Native | AG-UI event streaming |
+| JavaScript | Vanilla JS | ES6+ | Event handling |
+
+### Infrastructure
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Container | Docker | Deployment |
+| Database | SQLite | Checkpoints, email storage |
+| File Storage | Local filesystem | Attachments, documents |
+
+---
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# .env file
+
+# LLM Configuration
+LLM_PROVIDER=openai  # Options: openai, azure_openai, gemini, openrouter
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+
+# Azure OpenAI
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4
+AZURE_OPENAI_API_VERSION=2024-02-01
+
+# Google Gemini
+GOOGLE_API_KEY=...
+
+# OpenRouter
+OPENROUTER_API_KEY=sk-or-...
+
+LLM_MODEL=gpt-4-turbo  # Model name (varies by provider)
+
+# Server Configuration
+HOST=0.0.0.0
+PORT=8000
+DEBUG=true
+
+# A2A Registry
+A2A_REGISTRY_URL=http://localhost:8001
+
+# Mock Email Server
+SMTP_HOST=localhost
+SMTP_PORT=1025
+EMAIL_WEBHOOK_URL=http://localhost:8000/webhooks/email
+
+# Database
+CHECKPOINT_DB_PATH=data/checkpoints.db
+EMAIL_DB_PATH=data/emails.db
+
+# Timeouts (for testing, use short values)
+DEFAULT_TIMEOUT_HOURS=48
+DEFAULT_RETRY_COUNT=3
+VALIDATION_TIMEOUT_SECONDS=30
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+```
+
+### Configurable Parameters
+
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    """Application settings with validation."""
+
+    # LLM Provider Configuration
+    llm_provider: str = "openai"  # openai, azure_openai, gemini, openrouter
+
+    # OpenAI
+    openai_api_key: Optional[str] = None
+
+    # Azure OpenAI
+    azure_openai_api_key: Optional[str] = None
+    azure_openai_endpoint: Optional[str] = None
+    azure_openai_deployment_name: Optional[str] = None
+    azure_openai_api_version: str = "2024-02-01"
+
+    # Google Gemini
+    google_api_key: Optional[str] = None
+
+    # OpenRouter
+    openrouter_api_key: Optional[str] = None
+
+    # Model name (varies by provider)
+    llm_model: str = "gpt-4-turbo"
+
+    # Server
+    host: str = "0.0.0.0"
+    port: int = 8000
+    debug: bool = False
+
+    # A2A
+    a2a_registry_url: str = "http://localhost:8001"
+
+    # Email
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+    email_webhook_url: str = "http://localhost:8000/webhooks/email"
+
+    # Database
+    checkpoint_db_path: str = "data/checkpoints.db"
+    email_db_path: str = "data/emails.db"
+
+    # Timeouts (configurable per request)
+    default_timeout_hours: int = 48
+    default_retry_count: int = 3
+    validation_timeout_seconds: int = 30
+
+    # Logging
+    log_level: str = "INFO"
+    log_format: str = "json"
+
+    class Config:
+        env_file = ".env"
+```
+
+### LLM Provider Factory
+
+The system uses a factory pattern to support multiple LLM providers:
+
+```python
+from abc import ABC, abstractmethod
+from langchain_openai import ChatOpenAI, AzureChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI as OpenRouterChat
+from info_agent.config import Settings
+
+class BaseLLMProvider(ABC):
+    """Base class for LLM providers."""
+
+    @abstractmethod
+    def get_chat_model(self, **kwargs):
+        """Return a LangChain chat model instance."""
+        pass
+
+class OpenAIProvider(BaseLLMProvider):
+    def __init__(self, settings: Settings):
+        self.api_key = settings.openai_api_key
+        self.model = settings.llm_model
+
+    def get_chat_model(self, **kwargs):
+        return ChatOpenAI(
+            api_key=self.api_key,
+            model=self.model,
+            streaming=True,
+            **kwargs
+        )
+
+class AzureOpenAIProvider(BaseLLMProvider):
+    def __init__(self, settings: Settings):
+        self.api_key = settings.azure_openai_api_key
+        self.endpoint = settings.azure_openai_endpoint
+        self.deployment = settings.azure_openai_deployment_name
+        self.api_version = settings.azure_openai_api_version
+
+    def get_chat_model(self, **kwargs):
+        return AzureChatOpenAI(
+            api_key=self.api_key,
+            azure_endpoint=self.endpoint,
+            azure_deployment=self.deployment,
+            api_version=self.api_version,
+            streaming=True,
+            **kwargs
+        )
+
+class GeminiProvider(BaseLLMProvider):
+    def __init__(self, settings: Settings):
+        self.api_key = settings.google_api_key
+        self.model = settings.llm_model or "gemini-pro"
+
+    def get_chat_model(self, **kwargs):
+        return ChatGoogleGenerativeAI(
+            google_api_key=self.api_key,
+            model=self.model,
+            streaming=True,
+            **kwargs
+        )
+
+class OpenRouterProvider(BaseLLMProvider):
+    def __init__(self, settings: Settings):
+        self.api_key = settings.openrouter_api_key
+        self.model = settings.llm_model
+
+    def get_chat_model(self, **kwargs):
+        return ChatOpenAI(
+            api_key=self.api_key,
+            base_url="https://openrouter.ai/api/v1",
+            model=self.model,
+            streaming=True,
+            **kwargs
+        )
+
+def create_llm(settings: Settings) -> BaseLLMProvider:
+    """Factory function to create LLM provider based on configuration."""
+    providers = {
+        "openai": OpenAIProvider,
+        "azure_openai": AzureOpenAIProvider,
+        "gemini": GeminiProvider,
+        "openrouter": OpenRouterProvider,
+    }
+
+    provider_class = providers.get(settings.llm_provider)
+    if not provider_class:
+        raise ValueError(f"Unknown LLM provider: {settings.llm_provider}")
+
+    return provider_class(settings)
+
+# Usage in agents
+settings = Settings()
+llm_provider = create_llm(settings)
+chat_model = llm_provider.get_chat_model(temperature=0)
+```
+
+**Supported Models by Provider**:
+
+| Provider | Example Models |
+|----------|---------------|
+| OpenAI | `gpt-4-turbo`, `gpt-4o`, `gpt-4o-mini`, `gpt-3.5-turbo` |
+| Azure OpenAI | Deployment name (e.g., `gpt-4`, `gpt-35-turbo`) |
+| Google Gemini | `gemini-pro`, `gemini-1.5-pro`, `gemini-1.5-flash` |
+| OpenRouter | Any model via OpenRouter (e.g., `anthropic/claude-3-opus`, `google/gemini-pro`) |
+
+---
+
+## Directory Structure
+
+```
+info-agent/
+├── src/
+│   └── info_agent/
+│       ├── __init__.py
+│       ├── main.py                    # FastAPI application entry
+│       ├── config.py                  # Settings and configuration
+│       │
+│       ├── api/                       # API layer
+│       │   ├── __init__.py
+│       │   ├── routes/
+│       │   │   ├── __init__.py
+│       │   │   ├── workflows.py       # Workflow endpoints
+│       │   │   ├── files.py           # File management
+│       │   │   ├── webhooks.py        # Webhook receivers
+│       │   │   └── health.py          # Health checks
+│       │   ├── models/
+│       │   │   ├── __init__.py
+│       │   │   ├── requests.py        # Request models
+│       │   │   └── responses.py       # Response models
+│       │   └── middleware/
+│       │       ├── __init__.py
+│       │       ├── logging.py         # Request logging
+│       │       └── error_handler.py   # Error handling
+│       │
+│       ├── agents/                    # A2A Agents
+│       │   ├── __init__.py
+│       │   ├── base.py                # Base agent class
+│       │   ├── supervisor/
+│       │   │   ├── __init__.py
+│       │   │   ├── agent.py           # Supervisor agent
+│       │   │   ├── planner.py         # Plan generation
+│       │   │   └── state.py           # State definitions
+│       │   ├── mail/
+│       │   │   ├── __init__.py
+│       │   │   ├── agent.py           # Mail agent
+│       │   │   ├── composer.py        # Email composition
+│       │   │   ├── parser.py          # Email parsing
+│       │   │   └── state.py           # State definitions
+│       │   └── validation/
+│       │       ├── __init__.py
+│       │       ├── agent.py           # Validation agent
+│       │       ├── analyzer.py        # Document analysis
+│       │       ├── executor.py        # Python execution
+│       │       └── state.py           # State definitions
+│       │
+│       ├── workflow/                  # LangGraph workflow
+│       │   ├── __init__.py
+│       │   ├── graph.py               # Main workflow graph
+│       │   ├── nodes.py               # Workflow nodes
+│       │   ├── conditions.py          # Conditional edges
+│       │   ├── state.py               # Workflow state
+│       │   └── checkpointer.py        # SQLite checkpointing
+│       │
+│       ├── llm/                       # LLM Provider Abstraction
+│       │   ├── __init__.py
+│       │   ├── factory.py             # LLM factory (provider selection)
+│       │   ├── base.py                # Base LLM interface
+│       │   ├── openai_provider.py     # OpenAI implementation
+│       │   ├── azure_provider.py      # Azure OpenAI implementation
+│       │   ├── gemini_provider.py     # Google Gemini implementation
+│       │   └── openrouter_provider.py # OpenRouter implementation
+│       │
+│       ├── a2a/                       # A2A Protocol
+│       │   ├── __init__.py
+│       │   ├── registry.py            # Registry client
+│       │   ├── client.py              # A2A client
+│       │   ├── server.py              # A2A server base
+│       │   └── models.py              # A2A data models
+│       │
+│       ├── email/                     # Mock Email Server
+│       │   ├── __init__.py
+│       │   ├── server.py              # Email server
+│       │   ├── smtp.py                # SMTP handler
+│       │   ├── storage.py             # Email storage
+│       │   ├── webhook.py             # Webhook notifier
+│       │   └── models.py              # Email models
+│       │
+│       ├── dashboard/                 # AG-UI Dashboard
+│       │   ├── __init__.py
+│       │   ├── stream.py              # AG-UI event streaming
+│       │   └── events.py              # Event handlers
+│       │
+│       └── utils/                     # Utilities
+│           ├── __init__.py
+│           ├── logging.py             # Logging setup
+│           ├── exceptions.py          # Custom exceptions
+│           └── helpers.py             # Helper functions
+│
+├── a2a_registry/                      # A2A Registry Server
+│   ├── __init__.py
+│   ├── main.py                        # Registry application
+│   ├── storage.py                     # Agent storage
+│   └── models.py                      # Registry models
+│
+├── frontend/                          # Dashboard Frontend
+│   ├── templates/
+│   │   ├── base.html                  # Base template
+│   │   ├── index.html                 # Home page
+│   │   ├── workflow/
+│   │   │   ├── create.html            # Create workflow
+│   │   │   ├── plan.html              # View/approve plan
+│   │   │   ├── execute.html           # Execution dashboard
+│   │   │   └── results.html           # Validation results
+│   │   └── components/
+│   │       ├── header.html            # Header component
+│   │       ├── sidebar.html           # Sidebar navigation
+│   │       ├── status.html            # Status indicator
+│   │       └── audit_log.html         # Audit log component
+│   └── static/
+│       ├── css/
+│       │   └── app.css                # Custom styles
+│       └── js/
+│           ├── app.js                 # Main application
+│           ├── ag-ui.js               # AG-UI event handler
+│           └── utils.js               # Utility functions
+│
+├── tests/                             # Test suite
+│   ├── __init__.py
+│   ├── conftest.py                    # Test fixtures
+│   ├── unit/
+│   │   ├── test_supervisor.py
+│   │   ├── test_mail_agent.py
+│   │   ├── test_validation_agent.py
+│   │   └── test_workflow.py
+│   ├── integration/
+│   │   ├── test_a2a_communication.py
+│   │   ├── test_email_flow.py
+│   │   └── test_full_workflow.py
+│   └── e2e/
+│       └── test_demo_scenario.py
+│
+├── test_data/                         # Test input files
+│   ├── instructions_example.txt
+│   ├── faq_example.txt
+│   ├── escalation_example.txt
+│   ├── validation_example.txt
+│   └── sample_documents/
+│       ├── valid_excel.xlsx
+│       └── invalid_excel.xlsx
+│
+├── scripts/                           # Utility scripts
+│   ├── run_demo.py                    # Demo runner
+│   ├── seed_emails.py                 # Seed mock emails
+│   └── test_agents.py                 # Test agent connectivity
+│
+├── data/                              # Runtime data (gitignored)
+│   ├── checkpoints.db                 # SQLite checkpoints
+│   ├── emails.db                      # Email storage
+│   ├── attachments/                   # Attachment storage
+│   └── logs/                          # Log files
+│
+├── resources/                         # Documentation & research
+│   ├── research/                      # Research documents
+│   └── reports/                       # Generated reports
+│
+├── .env.example                       # Environment template
+├── .gitignore
+├── pyproject.toml                     # Project configuration
+├── README.md                          # Project documentation
+├── ARCHITECTURE.md                    # This document
+└── docker-compose.yml                 # Docker composition
+```
+
+---
+
+## Demo Setup
+
+### Three-Tab Browser Demo
+
+As specified in requirements, the demo will have 3 browser tabs:
+
+**Tab 1: System Dashboard** (http://localhost:8000)
+- Real-time execution status
+- Plan approval interface
+- Agent activity log
+- Validation results
+
+**Tab 2: Target Person Inbox** (http://localhost:8080/inbox/raj@gmail.com)
+- Mock email client for raj@gmail.com
+- View received requests
+- Compose and send replies
+- Upload attachments
+
+**Tab 3: End User Inbox** (http://localhost:8080/inbox/mrinal@gmail.com)
+- Mock email client for mrinal@gmail.com
+- Receive escalation notifications
+- Answer clarification questions
+
+### Demo Scenario
+
+```
+1. End User uploads 4 input files:
+   - instructions.txt: "Send mail to raj@gmail.com asking for Excel with 10 food recipes"
+   - faq.txt: Common questions and answers
+   - escalation.txt: "If no reply in 48h, contact vishal@gmail.com"
+   - validation.txt: "Excel file with exactly 10 rows of recipes"
+
+2. System generates plan and shows to user (Tab 1)
+
+3. User approves plan (Tab 1)
+
+4. System sends email to raj@gmail.com (visible in Tab 2)
+
+5. raj@gmail.com asks a clarification question (Tab 2)
+
+6. System checks FAQ:
+   - If found: Replies automatically
+   - If not found: Escalates to mrinal@gmail.com (Tab 3)
+
+7. mrinal@gmail.com provides answer (Tab 3)
+
+8. System forwards answer to raj@gmail.com (Tab 2)
+
+9. raj@gmail.com sends Excel attachment (Tab 2)
+
+10. Validation Agent validates the document
+
+11. Results displayed in dashboard (Tab 1)
+    - If PASS: Workflow complete
+    - If FAIL: Email sent to end user with report
+```
+
+### Demo Configuration
+
+For demo purposes, use short timeouts:
+
+```bash
+# .env for demo
+DEFAULT_TIMEOUT_HOURS=0.083  # 5 minutes instead of 48 hours
+DEFAULT_RETRY_COUNT=1        # 1 retry instead of 3
+VALIDATION_TIMEOUT_SECONDS=10
+```
+
+---
+
+## Security Considerations
+
+### Input Validation
+- All user inputs validated with Pydantic
+- File uploads scanned for type and size
+- Email addresses validated with regex
+
+### Python Execution (Validation Agent)
+- Subprocess with timeout (30 seconds)
+- Restricted imports whitelist:
+  - `pandas`, `numpy`, `json`, `csv`, `openpyxl`
+- No network access in execution environment
+- Temporary directory for execution
+
+### API Security
+- Rate limiting on all endpoints
+- CORS restricted to known origins
+- Input sanitization for XSS prevention
+
+### Data Protection
+- No sensitive data in logs
+- Attachment storage with random UUIDs
+- Audit trail for compliance
+
+---
+
+## Error Handling
+
+### Retry Logic
+- Email sending: 3 retries with exponential backoff
+- Agent communication: 3 retries
+- Webhook delivery: 3 retries
+
+### Graceful Degradation
+- Agent unavailable: Queue request, retry later
+- LLM timeout: Fallback to simpler prompts
+- Database error: In-memory fallback for critical operations
+
+### User Notification
+- All errors surfaced via AG-UI events
+- Detailed error messages in audit log
+- Email notification for critical failures
+
+---
+
+## Monitoring and Observability
+
+### Logging
+```python
+import structlog
+
+logger = structlog.get_logger()
+
+# Structured log format
+logger.info(
+    "workflow_started",
+    workflow_id=workflow_id,
+    user_id=user_id,
+    input_files=len(files)
+)
+```
+
+### Metrics
+- Workflow completion rate
+- Average execution time
+- Email send/receive latency
+- Validation success rate
+- Agent response times
+
+### Health Checks
+```
+GET /health
+{
+    "status": "healthy",
+    "components": {
+        "database": "ok",
+        "a2a_registry": "ok",
+        "email_server": "ok",
+        "llm": "ok"
+    },
+    "version": "1.0.0"
 }
 ```
 
 ---
 
-## 8. Integration Points
-
-### 8.1 Integration Summary
-
-| Integration | Protocol/API | Direction | Purpose |
-|-------------|--------------|-----------|---------|
-| User → System | REST + AG-UI (SSE) | Bidirectional | User requests, streaming responses |
-| System → Outlook | Microsoft Graph | Bidirectional | Send/receive emails |
-| Outlook → System | Graph Webhooks | Inbound | Real-time email notifications |
-| System → SharePoint | Microsoft Graph | Outbound | Query data |
-| System → Azure AD | Microsoft Graph | Outbound | User/manager lookup |
-| System → Calendar | Microsoft Graph | Outbound | OOO status |
-| Agent → Agent | A2A Protocol | Bidirectional | Inter-agent communication |
-| System → LLM | Azure OpenAI API | Outbound | NLU, composition, extraction |
-| System → DB | PostgreSQL | Bidirectional | State, audit logs |
-
-### 8.2 Email Webhook Pattern (Hybrid)
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                     EMAIL MONITORING STRATEGY                   │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  PRIMARY: Webhook Subscription                                 │
-│  ├── Resource: /users/{email}/mailFolders/inbox/messages      │
-│  ├── Change Types: created, updated                           │
-│  ├── Expiration: 3 days max                                    │
-│  ├── Renewal: 1 day before expiration                         │
-│  └── Validation: clientState parameter                        │
-│                                                                │
-│  FALLBACK: Delta Query                                         │
-│  ├── Frequency: Every 5-10 minutes                            │
-│  ├── Purpose: Catch missed webhook notifications              │
-│  └── Recovery: If token expires, retries for 4 hours          │
-│                                                                │
-│  WHY HYBRID?                                                   │
-│  • Webhooks expire in 3-4 days                                 │
-│  • Webhooks fail if OAuth token expires                        │
-│  • Delta queries provide reliable fallback                     │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### 8.3 Authentication
-
-**Pattern**: App-Only Authentication (Daemon App)
-
-```python
-from azure.identity import ClientSecretCredential
-from msgraph.generated import GraphServiceClient
-
-credential = ClientSecretCredential(
-    tenant_id=os.getenv("AZURE_TENANT_ID"),
-    client_id=os.getenv("AZURE_CLIENT_ID"),
-    client_secret=os.getenv("AZURE_CLIENT_SECRET")
-)
-
-client = GraphServiceClient(credential=credential)
-```
-
-**Required Permissions** (Application):
-- `Mail.ReadWrite` - Read/send emails
-- `Mail.Send` - Send emails on behalf of users
-- `Calendars.Read` - Check OOO status
-- `User.Read.All` - User lookup
-- `Directory.Read.All` - Manager hierarchy
-- `Sites.Read.All` - SharePoint queries
-
----
-
-## 9. State Management
-
-### 9.1 LangGraph State Schema
-
-```python
-from typing import TypedDict, Annotated, Literal
-from langchain_core.messages import BaseMessage
-import operator
-
-class InfoAgentState(TypedDict):
-    """Main state for the Info-Agent system"""
-
-    # Conversation messages (auto-appending)
-    messages: Annotated[list[BaseMessage], operator.add]
-
-    # Request metadata
-    request_id: str
-    user_id: str
-    channel: Literal["email", "sharepoint"]
-    target_person: str | None
-    target_location: str | None
-    information_needed: str
-
-    # Email-specific state
-    email_thread_id: str | None
-    email_threads: list[dict]
-    recipient_email: str | None
-    escalation_chain: list[str]
-    retry_count: int
-    exchange_count: int
-
-    # Request lifecycle
-    status: Literal["pending", "in_progress", "awaiting_reply",
-                    "completed", "failed", "escalated"]
-
-    # Results
-    extracted_information: str | None
-    error_message: str | None
-
-
-class EmailConversationState(TypedDict):
-    """State for email subgraph"""
-
-    messages: Annotated[list[BaseMessage], operator.add]
-    thread_id: str
-    thread_history: list[dict]  # Full email thread
-    current_recipient: str
-    original_request: str
-    draft_response: str | None
-    analysis_result: Literal["satisfactory", "clarification_needed",
-                             "insufficient", "off_topic"]
-    exchange_count: int
-    max_exchanges: int  # Default: 5
-```
-
-### 9.2 Checkpointing
-
-```python
-from langgraph.checkpoint.postgres import PostgresSaver
-
-# Production checkpointer
-checkpointer = PostgresSaver(
-    conn_string="postgresql://user:password@localhost:5432/info_agent"
-)
-
-# Compile graph with checkpointer
-graph = graph_builder.compile(checkpointer=checkpointer)
-
-# Use with thread ID for persistence
-config = {"configurable": {"thread_id": f"request-{request_id}"}}
-result = graph.invoke(initial_state, config=config)
-```
-
-### 9.3 Audit Log Schema
-
-```sql
-CREATE TABLE audit_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    request_id UUID NOT NULL,
-    user_id VARCHAR(255) NOT NULL,
-    action VARCHAR(50) NOT NULL,  -- 'request_created', 'email_sent', 'reply_received', etc.
-    channel VARCHAR(20),          -- 'email', 'sharepoint'
-    target VARCHAR(255),          -- recipient email or SharePoint location
-    details JSONB,                -- additional context
-    status VARCHAR(20),           -- 'success', 'failure'
-    error_message TEXT
-);
-
-CREATE INDEX idx_audit_request_id ON audit_logs(request_id);
-CREATE INDEX idx_audit_user_id ON audit_logs(user_id);
-CREATE INDEX idx_audit_timestamp ON audit_logs(timestamp);
-```
-
----
-
-## 10. Security Considerations
-
-### 10.1 Authentication & Authorization
-
-| Layer | Mechanism |
-|-------|-----------|
-| User → API | API Key / OAuth 2.0 |
-| API → Microsoft Graph | App-Only OAuth 2.0 (Client Credentials) |
-| Webhook Validation | clientState parameter verification |
-
-### 10.2 Security Checklist
-
-- [ ] Store secrets in environment variables (never in code)
-- [ ] Use Azure Key Vault for production secrets
-- [ ] Validate `clientState` on all webhook callbacks
-- [ ] Implement rate limiting on API endpoints
-- [ ] Sanitize user inputs to prevent prompt injection
-- [ ] Use HTTPS for all communications
-- [ ] Implement request timeouts
-- [ ] Log security events (auth failures, suspicious activity)
-- [ ] Rotate credentials regularly
-- [ ] Encrypt PII at rest and in transit
-
-### 10.3 Input Validation
-
-```python
-import re
-
-def sanitize_user_input(user_input: str) -> str:
-    """Prevent prompt injection and validate input"""
-
-    if not user_input:
-        raise ValueError("Input cannot be empty")
-
-    if len(user_input) > 10000:
-        raise ValueError("Input exceeds maximum length")
-
-    # Basic character validation (adjust as needed)
-    if not re.match(r"^[\w\s.,!?()'\"-@]+$", user_input):
-        raise ValueError("Input contains invalid characters")
-
-    return user_input.strip()
-```
-
----
-
-## 11. Implementation Roadmap
+## Implementation Phases
 
 ### Phase 1: Foundation (Week 1-2)
+- [ ] Project structure setup
+- [ ] FastAPI gateway with basic endpoints
+- [ ] SQLite checkpointing setup
+- [ ] Mock email server (SMTP + REST API)
+- [ ] Basic frontend with Tailwind
 
-| Task | Description |
-|------|-------------|
-| Project setup | Create Python project structure, dependencies |
-| LangGraph core | Implement basic graph with PostgresSaver |
-| State schemas | Define all state types |
-| Supervisor agent | Implement intent parsing and routing |
-| Basic tests | Unit tests for core components |
+### Phase 2: Agents (Week 3-4)
+- [ ] A2A Registry server
+- [ ] Supervisor Agent (planning, orchestration)
+- [ ] Mail Agent (send, receive, parse)
+- [ ] Validation Agent (analyze, execute Python)
 
-**Deliverable**: Running LangGraph with state persistence
+### Phase 3: Workflow (Week 5-6)
+- [ ] LangGraph workflow implementation
+- [ ] State management and transitions
+- [ ] Escalation and timeout handling
+- [ ] Clarification flow
 
-### Phase 2: Email Agent (Week 3-4)
+### Phase 4: Dashboard (Week 7-8)
+- [ ] AG-UI event streaming
+- [ ] Real-time dashboard views
+- [ ] Plan approval interface
+- [ ] Audit log viewer
 
-| Task | Description |
-|------|-------------|
-| Email composition | LLM-based email drafting |
-| Graph API integration | Send emails via Microsoft Graph |
-| Webhook setup | Email notification subscriptions |
-| Delta query fallback | Implement hybrid monitoring |
-| Reply parsing | LLM-based response analysis |
-| Multi-turn logic | Conversation state machine |
-
-**Deliverable**: Functional email agent with multi-turn support
-
-### Phase 3: Directory & SharePoint (Week 5-6)
-
-| Task | Description |
-|------|-------------|
-| Directory agent | User lookup, manager hierarchy |
-| OOO detection | Calendar API integration |
-| Escalation logic | Auto-forward to manager |
-| SharePoint agent | List queries, document search |
-| Integration tests | End-to-end tests |
-
-**Deliverable**: Complete backend with all agents
-
-### Phase 4: Frontend (Week 7-8)
-
-| Task | Description |
-|------|-------------|
-| CopilotKit setup | React + CopilotKit integration |
-| AG-UI streaming | Real-time response streaming |
-| UI components | Chat interface, status indicators |
-| State sync | Frontend-backend state synchronization |
-| Error handling UI | User-friendly error messages |
-
-**Deliverable**: Functional web UI
-
-### Phase 5: Production Hardening (Week 9-10)
-
-| Task | Description |
-|------|-------------|
-| Audit logging | Complete audit trail |
-| Error handling | Comprehensive error recovery |
-| Monitoring | LangSmith integration, metrics |
-| Security review | Penetration testing, code review |
-| Load testing | Performance validation |
-| Documentation | API docs, runbooks |
-
-**Deliverable**: Production-ready system
+### Phase 5: Integration & Demo (Week 9-10)
+- [ ] End-to-end testing
+- [ ] Demo scenario setup
+- [ ] Documentation
+- [ ] Performance optimization
 
 ---
 
-## 12. Best Practices
+## Appendix
 
-### 12.1 Agent Design
+### A. Input File Examples
 
+**instructions.txt**:
 ```
-DO:
-├── Each agent has single, well-defined responsibility
-├── Agent prompts are clear, concise, and specific
-├── Agents have appropriate tools for their domain
-├── Agent failures are isolated (don't cascade)
-└── Agents provide clear reasoning for decisions
-
-DON'T:
-├── Single agent with 50+ tools
-├── Vague instructions like "research the topic"
-├── Agents making decisions outside their domain
-└── Swallowing errors silently
+Send mail to raj@gmail.com asking for an Excel sheet containing 10 rows of food recipes.
+The Excel should have columns: Recipe Name, Ingredients, Cooking Time, Difficulty Level.
 ```
 
-### 12.2 State Management
+**faq.txt**:
+```
+Q: What format should the recipes be in?
+A: Please provide an Excel file (.xlsx) with columns for Recipe Name, Ingredients, Cooking Time, and Difficulty Level.
+
+Q: How many recipes are needed?
+A: We need exactly 10 recipes.
+
+Q: What difficulty levels should be used?
+A: Use Easy, Medium, or Hard for difficulty levels.
+```
+
+**escalation.txt**:
+```
+If raj@gmail.com is not available, out of office, or doesn't reply within 48 hours, reach out to vishal@gmail.com.
+
+If the requested user has clarifying questions not covered in the FAQ, first email mrinal@gmail.com to get answers, then share with raj@gmail.com.
+```
+
+**validation.txt**:
+```
+The reply should have an attachment with:
+1. An Excel file (.xlsx format)
+2. Exactly 10 rows of food recipes
+3. Columns: Recipe Name, Ingredients, Cooking Time, Difficulty Level
+4. All cells should be filled (no empty values)
+5. Difficulty Level should be one of: Easy, Medium, Hard
+```
+
+### B. AG-UI Event Types Used
 
 ```python
-# DO: Use reducer for message lists
-class AgentState(TypedDict):
-    messages: Annotated[list[BaseMessage], operator.add]
+# Lifecycle Events
+RUN_STARTED          # Workflow execution started
+RUN_FINISHED         # Workflow completed successfully
+RUN_ERROR            # Workflow failed with error
 
-# DO: Return only changed keys
-def my_node(state: AgentState):
-    return {"messages": [new_message]}  # Only messages updated
+# Content Events
+TEXT_MESSAGE_START   # Agent started generating text
+TEXT_MESSAGE_CONTENT # Agent text content (streaming)
+TEXT_MESSAGE_END     # Agent finished generating text
 
-# DON'T: Return entire state
-def bad_node(state: AgentState):
-    return {**state, "messages": state["messages"] + [new_message]}
+# Tool Events
+TOOL_CALL_START      # Agent invoking a tool
+TOOL_CALL_ARGS       # Tool arguments
+TOOL_CALL_END        # Tool execution completed
+
+# State Events
+STATE_SNAPSHOT       # Full state snapshot
+STATE_DELTA          # Incremental state update
+
+# Custom Events (Info-Agent specific)
+PLAN_GENERATED       # Execution plan ready for approval
+PLAN_APPROVED        # User approved the plan
+EMAIL_SENT           # Email was sent
+EMAIL_RECEIVED       # Email was received
+CLARIFICATION_NEEDED # Question requires escalation
+VALIDATION_STARTED   # Document validation started
+VALIDATION_COMPLETE  # Validation finished with result
 ```
 
-### 12.3 Email Context
+### C. A2A Task Lifecycle
 
 ```
-CRITICAL: LLMs experience 39% performance drop in multi-turn conversations
-          without full context.
+submitted → working → input-required → working → completed
+                ↑                          ↓
+                └──────── (user input) ────┘
 
-DO:
-├── Include FULL thread history in LLM context
-├── Maintain structured thread metadata
-├── Preserve sender relationships
-└── Use checkpointing to avoid re-processing
-
-DON'T:
-├── Pass only the latest email to LLM
-├── Lose thread context between turns
-└── Forget who said what
-```
-
-### 12.4 Webhook Management
-
-```
-DO:
-├── Track subscription IDs and expiration times
-├── Renew subscriptions 1 day before expiration
-├── Implement delta query as fallback
-├── Validate clientState on every callback
-└── Handle lifecycle notifications
-
-DON'T:
-├── Create webhook and forget about expiration
-├── Trust webhooks without validation
-├── Rely solely on webhooks (they can fail)
-└── Ignore token expiration
+submitted → working → failed
 ```
 
 ---
 
-## 13. Anti-Patterns to Avoid
+## Document History
 
-| Anti-Pattern | Problem | Solution |
-|--------------|---------|----------|
-| **Last-message-only context** | 39% LLM performance drop | Include full thread history |
-| **Monolithic agent** | Unmanageable complexity | Separate specialized agents |
-| **Webhook-only monitoring** | Missed notifications | Hybrid webhook + delta query |
-| **No checkpointing** | Lost state on failures | PostgresSaver in production |
-| **Hardcoded config** | Security risk, inflexible | Environment variables |
-| **Silent failures** | Hidden bugs | Comprehensive logging |
-| **Agent decides channel** | User confusion | User explicitly chooses |
-| **Infinite conversation loops** | Resource waste | Max 5 exchanges limit |
-| **No audit trail** | Compliance issues | Log all actions |
-| **Synchronous webhook handler** | Timeouts | Async processing |
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0.0 | 2025-12-13 | Claude | Initial architecture document |
 
 ---
 
-## Appendix A: Environment Variables
+## References
 
-```bash
-# Azure AD / Microsoft Graph
-AZURE_TENANT_ID=your-tenant-id
-AZURE_CLIENT_ID=your-client-id
-AZURE_CLIENT_SECRET=your-client-secret
-
-# OpenAI / Azure OpenAI
-OPENAI_API_KEY=your-api-key
-# OR for Azure OpenAI:
-AZURE_OPENAI_API_KEY=your-azure-openai-key
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-
-# Database
-DATABASE_URL=postgresql://user:password@localhost:5432/info_agent
-
-# LangSmith (Observability)
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your-langsmith-key
-LANGCHAIN_PROJECT=info-agent
-
-# Application
-WEBHOOK_BASE_URL=https://your-domain.com/api/webhooks
-API_KEY=your-api-key-for-clients
-```
-
----
-
-## Appendix B: API Endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/copilotkit` | POST | CopilotKit Runtime (AG-UI) |
-| `/api/webhooks/email` | POST | Microsoft Graph email notifications |
-| `/api/health` | GET | Health check |
-| `/api/requests/{id}` | GET | Get request status |
-| `/api/requests/{id}/cancel` | POST | Cancel pending request |
-
----
-
-## Appendix C: References
-
-### Official Documentation
-- [LangGraph Documentation](https://www.langchain.com/langgraph)
-- [A2A Protocol](https://a2a-protocol.org/)
-- [AG-UI Protocol](https://docs.ag-ui.com/)
-- [CopilotKit Documentation](https://docs.copilotkit.ai/)
-- [Microsoft Graph API](https://learn.microsoft.com/en-us/graph/)
-
-### Research Documents
-- [Multi-Agent Systems Research (2024-2025)](/workspaces/info-agent/resources/research/multi-agent-agentic-systems/)
-
----
-
-*Document generated as part of Info-Agent architecture design session.*
+1. [Google A2A Protocol Documentation](https://google.github.io/A2A/)
+2. [AG-UI Protocol Documentation](https://docs.ag-ui.com/)
+3. [LangGraph Documentation](https://docs.langchain.com/langgraph)
+4. [FastAPI Documentation](https://fastapi.tiangolo.com/)
+5. [HTMX Documentation](https://htmx.org/)
+6. [Tailwind CSS Documentation](https://tailwindcss.com/)

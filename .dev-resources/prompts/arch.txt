@@ -1,19 +1,90 @@
-I want to create an agentic system which should be able to use 2 channels email and sharepoint to get certain information.
-For an example if I want to have a list of all the employess in a certain department and I tell the agentic system to fetch this information from an employee Raj then a mail should be sent to Raj. If he is on leave then the mail should be forwared to his line manager.
+I want to create below system:
+Description - When an end user provides some requirement to be fetched from some person, the system should be able to mail the person about requested information, clarifies his doubt in case of some questions, escalate if the required document is not recieved withtin a certain threshold time and validates the requested document received. 
 
-Tell me all the integration points. What are all the components involved. What should be the technology involved. For me here are some suggestions, langgraph, a2a, ag-ui, copilot-kit etc whichever are required.
+Inputs to the system:
+1. The end user has 4 text files
+  a. 1st text file - instructions
+    example - send mail to raj@gmail.com asking a excel sheet containing 10 rows of food recipes
+  b. 2nd text file - faq
+    example - frequently asked questions regarding the instructions
+  c. escalation - in case the requested piece of information is blocked
+    example - if raj@gmail.com is not available or out of office or doesn't reply in 48 hours then reach out to vishal@gmail.com.
+    example - If the requested user has clarifying questions about the requirement document and if that information is not present in the input FAQ document then first mail me mrinal@gmail.com, get the answers from me. Share it with raj@gmail.com and wait for his reply.    
+  d. validation - what are the steps to validate if the requested information is correct.
+    example - the reply should have an attachment with an excel file containing 10 rows of food recipes
 
-feel free to use @agent-tech-intelligence-researcher if required.
-------------------------
+Actual components of the system:
+1. Supervisor agent - 
+this agent will have LLM support
 
-🤔 Questions to Consider for Quality/Experience
+Planning:
+reads all the 4 files instructions, faq, escalation, validation and creates a plan and persists the plan on disk, It should even show the plan to the end user before implementing it by rearticulating the user's requirement is its own words so that the end user is confident that the Supervisor Agent has correctly understood the requirement. It checks a2a registry server to know what are all the agents available to perform the task. In the plan it also mentions the execution order of the agents to be performed.
 
-  1. Retry Logic: What if email fails to send? How many retries? - 3
-  2. Audit Trail: Do you need logging of who requested what information and from whom? - Yes
-  3. Response Parsing: When Raj replies, how does the agent extract the relevant information from his email? (NLP/LLM parsing
-  needed?) - LLM parsing. It may happen that Raj asks for clarifying questions in that case the agent should be able to reply back with relevant informtaion. So it is kind of autonoumous where Raj can freely talk to the email agent until he understands what exactly needs to be sent. And the same True for the email agent also if the reply from Raj is not satisfactory then the email agent can again ask For more information from raj.
-  4. Multi-language Support: Will emails be in English only? - for now yes but not necessarily in future
-  5. Rate Limiting: Microsoft Graph API has throttling limits - how many requests/day expected? - this is a poc so keep it to that only
-  6. Notification Preferences: Should users be able to opt-out or set preferred contact methods? - what does it mean?
-  7. Error Handling UX: How should end-users be notified of failures? - an email should be sent from the email agent to the end in such cases
------------------------------
+
+
+2. Mail agent - 
+this agent will have LLM support
+
+For now there will be a single specialised agent like mail agent, but in future there will be other agents also like teams agent, sharepoint agent and so on.
+
+3. Validation agent - 
+this agent will have LLM support
+
+Calling validation agent is mandatory which validates the correctness of the requested information.
+Validation agent should also have a tool that can run and execute python programs. 
+Why? - lets say a requested information has a lot many rows then validation agent can write a python program that analyses and provides the summary to validation agent to vaildate the findings.
+-------------------
+technology involved according to me but you are the best one to decide on it:
+1. google a2a - 
+servers - Supervisor Agent, Mail Agent, Validation Agent, Agent Registry
+2. langgraph
+3. HTML and tailwind css to create a bare minimum frontend
+
+I don't have a smtp server so you will have to come up with some idea on how to deal with it.
+
+-----------------------------------------------------
+
+In the proposed architecture, here are some of my suggestions:
+1. End user can also ask the Agent again to improve on some points and the agent should be ale to reiterate on it and provide with the refreshed plan and waits for approval.
+
+2. Plan generator should be called after A2A registry lookup becuase in the plan the agent should show the end user about the execution order of the agents also.
+
+Answers to Pin-Pointed questions:
+1. mail Backend Strategy - I like the idea of mock/stub server
+2. State Persistence & Workflow Engine -  LangGraph with Checkpointing
+3. How Will Incoming Emails Be Detected? - Webhook with mock/stub server
+4. A2A Protocol Implementation - Official google a2a sdk - Use @tech-intelligence-researcher sub agent to research on google a2a sdk
+5. Validation Agent - Python Execution - Subprocess with timeout + restricted imports for POC
+6. Frontend Architecture
+Question: Do you want a simple static page or a real-time updating dashboard?
+Answer: real-time updating dashboard using AG-UI. Research on AG-UI using sub agent @tech-intelligence-researcher. Search for available sdks. do not try to implement the AG-UI yourself rather try to find battle tested sdks present already for both UI and its corresponding backend.
+FastAPI backend + HTML/Tailwind + HTMX - looks good but check if there is any ag-ui sdk for this tech stack.
+
+Questions for You to Consider (Experience Improvement)
+
+  1. Retry Logic: What if an email bounces? Should the system retry or immediately escalate? - It should retry 3 times and then escalate
+  2. Partial Validation: If raj@gmail.com sends an Excel with only 8 rows instead of 10, should the system:
+    It should mark the result as failed and mail the end user with the same.
+
+  3. Multiple Recipients: Can instructions involve multiple people simultaneously (e.g., "Get recipes from Raj AND budget from
+  Vishal")? - Yes definitely it should and must be supported
+  4. Audit Trail: Do you need a full history log of all communications for compliance/debugging? - Yes of course. It is the most critical part
+  5. Attachment Handling: What file types should be supported? Should there be size limits? - No size limit for now
+  6. Timeout Granularity: The escalation mentions 48 hours. Should this be configurable per request? - Yes make it configurable. Also configurable parameters will help us test during our development
+  7. Human-in-the-Loop Checkpoints: Besides plan approval, should the user approve:
+    - Each email before sending? - No
+    - Validation results before closing? - No
+
+Note:
+For the poc on which we are working on, needs a demo presented in the following fashion:
+1. I will have 3 tabs opened up on web browser:
+  a. First tab - the frontend ui of this system with real time dashboard on the current state of the execution
+  b. Second tab - email inbox of the requested person who is supposed to reply back with the actual information
+  c. Third tab - email inbox of the end user who should be abe to answer to any clarification questions which the requested person may ask which is even not present in the FAQ input document
+-----------------------------------
+
+Question 1: AG-UI Approach
+Didn't you find any sdk already available so that you don't have to implement it again?
+
+Question 2: LangGraph Checkpointing Backend
+SQLite
