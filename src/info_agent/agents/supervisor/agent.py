@@ -37,7 +37,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from info_agent.a2a import A2AClient
+from info_agent.a2a.sdk_client_wrapper import get_sdk_client, SDKClientWrapper
 from info_agent.agents.supervisor.planner import ExecutionPlanner
 from info_agent.agents.supervisor.state import (
     SupervisorState,
@@ -82,7 +82,7 @@ class SupervisorAgent:
         settings: Application settings instance.
         planner: ExecutionPlanner for generating execution plans.
         compiled_workflow: Compiled LangGraph workflow with checkpointing.
-        a2a_client: Client for A2A protocol communication.
+        a2a_client: SDK client wrapper for A2A protocol communication.
     """
 
     def __init__(
@@ -125,9 +125,9 @@ class SupervisorAgent:
             logger.debug("Using provided compiled workflow")
             self.compiled_workflow = compiled_workflow
 
-        # Initialize A2A client
-        logger.debug("Initializing A2A client", registry_url=self.settings.a2a_registry_url)
-        self.a2a_client = A2AClient(self.settings.a2a_registry_url)
+        # Initialize SDK A2A client wrapper
+        logger.debug("Initializing SDK A2A client", registry_url=self.settings.a2a_registry_url)
+        self.a2a_client = get_sdk_client(registry_url=self.settings.a2a_registry_url)
 
         logger.info("SupervisorAgent initialized successfully")
 

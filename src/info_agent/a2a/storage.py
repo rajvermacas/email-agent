@@ -33,7 +33,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from info_agent.a2a.models import AgentCard, AgentSkill
+from a2a.types import AgentCard, AgentSkill
 from info_agent.config import get_settings
 from info_agent.utils.exceptions import AgentNotFoundError, StorageError
 from info_agent.utils.logging import get_logger
@@ -153,7 +153,8 @@ class A2AStorage:
             )
 
         now = datetime.now(timezone.utc).isoformat()
-        created_at = agent_card.created_at.isoformat() if agent_card.created_at else now
+        # SDK AgentCard doesn't have created_at, so use current time for new records
+        created_at = now
 
         try:
             async with aiosqlite.connect(self.db_path) as db:
@@ -179,10 +180,11 @@ class A2AStorage:
                         agent_card.description,
                         agent_card.version,
                         agent_card.url,
-                        json.dumps(agent_card.capabilities),
+                        # SDK AgentCapabilities is an object, need to serialize it
+                        json.dumps(agent_card.capabilities.model_dump() if agent_card.capabilities else {}),
                         json.dumps([skill.model_dump() for skill in agent_card.skills]),
-                        json.dumps(agent_card.defaultInputModes),
-                        json.dumps(agent_card.defaultOutputModes),
+                        json.dumps(agent_card.default_input_modes or []),
+                        json.dumps(agent_card.default_output_modes or []),
                         created_at,
                         now,
                     ),
@@ -257,6 +259,7 @@ class A2AStorage:
                     skills_data = json.loads(row["skills"])
                     skills = [AgentSkill(**skill) for skill in skills_data]
 
+                    # SDK AgentCard uses snake_case and doesn't have created_at
                     agent_card = AgentCard(
                         name=row["name"],
                         description=row["description"],
@@ -264,9 +267,8 @@ class A2AStorage:
                         url=row["url"],
                         capabilities=json.loads(row["capabilities"]),
                         skills=skills,
-                        defaultInputModes=json.loads(row["default_input_modes"]),
-                        defaultOutputModes=json.loads(row["default_output_modes"]),
-                        created_at=datetime.fromisoformat(row["created_at"]),
+                        default_input_modes=json.loads(row["default_input_modes"]),
+                        default_output_modes=json.loads(row["default_output_modes"]),
                     )
 
                     logger.info(
@@ -319,6 +321,7 @@ class A2AStorage:
                         skills_data = json.loads(row["skills"])
                         skills = [AgentSkill(**skill) for skill in skills_data]
 
+                        # SDK AgentCard uses snake_case and doesn't have created_at
                         agent_card = AgentCard(
                             name=row["name"],
                             description=row["description"],
@@ -326,9 +329,8 @@ class A2AStorage:
                             url=row["url"],
                             capabilities=json.loads(row["capabilities"]),
                             skills=skills,
-                            defaultInputModes=json.loads(row["default_input_modes"]),
-                            defaultOutputModes=json.loads(row["default_output_modes"]),
-                            created_at=datetime.fromisoformat(row["created_at"]),
+                            default_input_modes=json.loads(row["default_input_modes"]),
+                            default_output_modes=json.loads(row["default_output_modes"]),
                         )
                         agents.append(agent_card)
 

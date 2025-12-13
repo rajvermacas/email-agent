@@ -1,41 +1,38 @@
 """
-A2A (Agent-to-Agent) protocol implementation.
+A2A (Agent-to-Agent) protocol implementation using official a2a-sdk.
 
-This module provides a complete implementation of the A2A protocol for
-agent-to-agent communication, including:
+This module provides A2A protocol support using the official a2a-sdk,
+along with custom registry implementation for agent discovery.
 
-- Pydantic models for A2A protocol data structures
-- SQLite storage for agent registry
-- FastAPI router for registry endpoints
-- HTTP client for agent communication
+Components:
+- SDK Types: Re-exported from a2a-sdk for convenience
+- Custom Registry: SQLite-backed agent registry (not part of A2A spec)
+- SDK Client Wrapper: Simplified API over SDK client
+- Custom Models: Registry-specific response models
 
 Usage:
-    # Models
-    from info_agent.a2a import AgentCard, AgentSkill, A2ATaskRequest
+    # SDK Types (re-exported from a2a-sdk)
+    from info_agent.a2a import AgentCard, AgentSkill, Message, Task
 
-    # Storage
-    from info_agent.a2a import A2AStorage
+    # Custom Registry
+    from info_agent.a2a import A2AStorage, init_registry, create_a2a_router
 
-    # Registry
-    from info_agent.a2a import create_a2a_router, init_registry, cleanup_registry
-
-    # Client
-    from info_agent.a2a import A2AClient
+    # SDK Client Wrapper
+    from info_agent.a2a import SDKClientWrapper, get_sdk_client
 
 Example:
     # Setup registry
-    from info_agent.a2a import init_registry, create_a2a_router
-
     await init_registry()
     router = create_a2a_router()
 
-    # Register agent
+    # Register agent using SDK AgentCard
     from info_agent.a2a import AgentCard, AgentSkill
 
     skill = AgentSkill(
         id="convert",
         name="Convert Currency",
         description="Converts between currencies",
+        tags=["currency"],
         input_schema={"type": "object", "properties": {}}
     )
 
@@ -43,54 +40,75 @@ Example:
         name="currency-agent",
         description="Currency conversion agent",
         version="1.0",
-        url="http://localhost:8001/a2a",
-        capabilities={},
+        url="http://localhost:8001",
         skills=[skill],
-        defaultInputModes=["text"],
-        defaultOutputModes=["text"]
+        default_input_modes=["text"],  # SDK uses snake_case
+        default_output_modes=["text"]
     )
 
-    # Use client
-    from info_agent.a2a import A2AClient
+    # Use SDK client wrapper
+    from info_agent.a2a import get_sdk_client
 
-    client = A2AClient("http://localhost:8001/a2a")
+    client = get_sdk_client()
     result = await client.send_task(
-        agent_name="currency-agent",
+        agent_url="http://localhost:8001",
         skill_id="convert",
         payload={"amount": 100, "from": "USD", "to": "EUR"}
     )
 """
 
-from info_agent.a2a.client import A2AClient
-from info_agent.a2a.models import (
-    A2ATaskRequest,
-    A2ATaskResponse,
+# Re-export SDK types for convenience
+from a2a.types import (
     AgentCard,
     AgentSkill,
-    RegisterAgentResponse,
+    DataPart,
+    Message,
+    Role,
+    Task,
+    TaskStatus,
 )
+
+# Custom registry components
 from info_agent.a2a.registry import (
     cleanup_registry,
     create_a2a_router,
     get_a2a_router,
     init_registry,
 )
+
+# Custom storage
 from info_agent.a2a.storage import A2AStorage
 
+# SDK client wrapper
+from info_agent.a2a.sdk_client_wrapper import (
+    SDKClientWrapper,
+    cleanup_sdk_client,
+    get_sdk_client,
+)
+
+# Custom models (keep RegisterAgentResponse for registry API)
+# Note: A2ATaskRequest and A2ATaskResponse are replaced by SDK Message and Task
+from info_agent.a2a.registry_models import RegisterAgentResponse
+
 __all__ = [
-    # Models
-    "AgentSkill",
+    # SDK Types (re-exported)
     "AgentCard",
-    "A2ATaskRequest",
-    "A2ATaskResponse",
-    "RegisterAgentResponse",
-    # Storage
+    "AgentSkill",
+    "Message",
+    "Task",
+    "TaskStatus",
+    "DataPart",
+    "Role",
+    # Custom Registry
     "A2AStorage",
-    # Registry
     "init_registry",
     "cleanup_registry",
     "create_a2a_router",
     "get_a2a_router",
-    # Client
-    "A2AClient",
+    # SDK Client Wrapper
+    "SDKClientWrapper",
+    "get_sdk_client",
+    "cleanup_sdk_client",
+    # Custom Models
+    "RegisterAgentResponse",
 ]

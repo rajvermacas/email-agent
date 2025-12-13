@@ -27,7 +27,8 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, status
 
-from info_agent.a2a.models import AgentCard, RegisterAgentResponse
+from a2a.types import AgentCard
+from info_agent.a2a.registry_models import RegisterAgentResponse
 from info_agent.a2a.storage import A2AStorage
 from info_agent.utils.exceptions import AgentNotFoundError, StorageError
 from info_agent.utils.logging import get_logger

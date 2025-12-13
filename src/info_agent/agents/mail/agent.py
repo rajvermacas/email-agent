@@ -1,13 +1,13 @@
 """
-Mail Agent implementing A2A protocol for email operations.
+Mail Agent implementing A2A protocol for email operations using official a2a-sdk.
 
 This module provides the main Mail Agent class that implements the A2A protocol
-for email-related operations. The agent handles two primary skills:
+for email-related operations using the official a2a-sdk. The agent handles two primary skills:
 1. send-email: Compose and send emails using LLM
 2. receive-email-webhook: Process incoming email webhooks
 
-The agent registers itself with the A2A registry on startup and handles
-task requests according to the A2A protocol specification.
+The agent uses SDK's A2ARESTFastAPIApplication for spec-compliant server implementation
+and registers itself with the A2A registry on startup.
 
 All operations are async using FastAPI and httpx.
 No fallback/default values - missing data raises exceptions.
@@ -22,8 +22,8 @@ Usage:
     # Start the agent (registers with A2A registry)
     await agent.start()
 
-    # Process tasks
-    result = await agent.handle_task(task_request)
+    # Get FastAPI app for uvicorn
+    app = agent.get_app()
 
     # Shutdown
     await agent.shutdown()
@@ -34,10 +34,22 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
-from info_agent.a2a import A2ATaskRequest, A2ATaskResponse, AgentCard, AgentSkill
+from a2a.server.apps.rest.fastapi_app import A2ARESTFastAPIApplication
+from a2a.server.context import ServerCallContext
+from a2a.server.request_handlers.request_handler import RequestHandler
+from a2a.types import (
+    AgentCard,
+    AgentSkill,
+    DataPart,
+    Message,
+    MessageSendParams,
+    Role,
+    Task,
+    TaskStatus,
+)
+
 from info_agent.agents.mail.composer import EmailComposer
 from info_agent.agents.mail.parser import EmailParser
 from info_agent.agents.mail.smtp_client import SMTPClient
@@ -55,24 +67,364 @@ from info_agent.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+class MailAgentRequestHandler(RequestHandler):
+    """
+    Request handler for Mail Agent implementing A2A protocol.
+
+    This handler processes incoming messages and routes them to appropriate
+    skill handlers (send-email or receive-email-webhook).
+
+    Attributes:
+        mail_agent: Reference to MailAgent instance for accessing components.
+    """
+
+    def __init__(self, mail_agent: "MailAgent") -> None:
+        """
+        Initialize request handler.
+
+        Args:
+            mail_agent: MailAgent instance.
+        """
+        super().__init__()  # Call parent init
+        self.mail_agent = mail_agent
+        logger.debug("MailAgentRequestHandler initialized")
+
+    async def on_message_send(
+        self,
+        params: MessageSendParams,
+        context: ServerCallContext | None = None,
+    ) -> Task | Message:
+        """
+        Handle incoming message and route to appropriate skill.
+
+        This is the main entry point for A2A task requests.
+        Extracts skill_id from message metadata and routes to handler.
+
+        Args:
+            params: Message send parameters containing the message.
+            context: Optional server call context.
+
+        Returns:
+            Task with result or error.
+
+        Raises:
+            A2AError: If skill not supported or handling fails.
+        """
+        message = params.message
+        task_id = message.task_id or str(uuid.uuid4())
+        context_id = message.context_id or task_id
+
+        logger.info(
+            "Received message",
+            task_id=task_id,
+            context_id=context_id,
+            role=message.role,
+        )
+
+        # Extract payload from message parts
+        if not message.parts or len(message.parts) == 0:
+            logger.error("Message has no parts", task_id=task_id)
+            return self._create_error_task(
+                task_id=task_id,
+                context_id=context_id,
+                error="Message has no parts",
+            )
+
+        # Get data from first DataPart
+        payload = {}
+        for part in message.parts:
+            if isinstance(part, DataPart) and part.data:
+                payload = part.data
+                break
+
+        if not payload:
+            logger.error("No data payload found in message", task_id=task_id)
+            return self._create_error_task(
+                task_id=task_id,
+                context_id=context_id,
+                error="No data payload found in message",
+            )
+
+        # Determine skill from payload or metadata
+        skill_id = payload.get("skill_id") or payload.get("skill")
+        if message.metadata:
+            skill_id = skill_id or message.metadata.get("skill_id")
+
+        if not skill_id:
+            logger.error("No skill_id specified in message", task_id=task_id)
+            return self._create_error_task(
+                task_id=task_id,
+                context_id=context_id,
+                error="No skill_id specified in message",
+            )
+
+        logger.info(
+            "Routing to skill handler",
+            task_id=task_id,
+            skill_id=skill_id,
+        )
+
+        # Create initial task state
+        state: MailAgentState = {
+            "task_id": task_id,
+            "skill_id": skill_id,  # type: ignore
+            "status": "submitted",
+            "email_task": {},  # type: ignore
+            "result": None,
+            "error": None,
+            "payload": payload,
+        }
+
+        self.mail_agent._active_tasks[task_id] = state
+
+        try:
+            # Update to working
+            state["status"] = "working"
+
+            # Route to skill handler
+            if skill_id == "send-email":
+                result = await self.mail_agent._handle_send_email(payload)
+                state["result"] = result
+                state["status"] = "completed"
+
+                # Create success task
+                return self._create_success_task(
+                    task_id=task_id,
+                    context_id=context_id,
+                    result=result,
+                    message=message,
+                )
+
+            elif skill_id == "receive-email-webhook":
+                result = await self.mail_agent._handle_receive_email_webhook(payload)
+                state["result"] = result
+                state["status"] = "completed"
+
+                # Create success task
+                return self._create_success_task(
+                    task_id=task_id,
+                    context_id=context_id,
+                    result=result,
+                    message=message,
+                )
+
+            else:
+                logger.error("Unsupported skill", skill_id=skill_id, task_id=task_id)
+                state["status"] = "failed"
+                state["error"] = f"Unsupported skill: {skill_id}"
+
+                return self._create_error_task(
+                    task_id=task_id,
+                    context_id=context_id,
+                    error=f"Unsupported skill: {skill_id}",
+                )
+
+        except Exception as e:
+            logger.error(
+                "Task handling failed",
+                task_id=task_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+
+            state["status"] = "failed"
+            state["error"] = str(e)
+
+            return self._create_error_task(
+                task_id=task_id,
+                context_id=context_id,
+                error=str(e),
+            )
+
+    async def on_get_task(
+        self,
+        params: Any,
+        context: ServerCallContext | None = None,
+    ) -> Task | None:
+        """
+        Get status of a specific task.
+
+        Args:
+            params: Task query parameters with task_id.
+            context: Optional server call context.
+
+        Returns:
+            Task if found, None otherwise.
+        """
+        task_id = params.task_id if hasattr(params, "task_id") else params.get("task_id")
+
+        logger.info("Task status requested", task_id=task_id)
+
+        if task_id not in self.mail_agent._active_tasks:
+            logger.warning("Task not found", task_id=task_id)
+            return None
+
+        state = self.mail_agent._active_tasks[task_id]
+
+        # Convert status string to TaskStatus enum
+        status_map = {
+            "submitted": TaskStatus.submitted,
+            "working": TaskStatus.working,
+            "completed": TaskStatus.completed,
+            "failed": TaskStatus.failed,
+            "cancelled": TaskStatus.cancelled,
+        }
+
+        status = status_map.get(state["status"], TaskStatus.failed)
+
+        # Create task with current state
+        if state["status"] == "completed":
+            return Task(
+                id=task_id,
+                context_id=task_id,
+                status=status,
+                history=[
+                    Message(
+                        message_id=str(uuid.uuid4()),
+                        role=Role.agent,
+                        parts=[DataPart(data=state["result"])],
+                    )
+                ],
+            )
+        elif state["status"] == "failed":
+            return Task(
+                id=task_id,
+                context_id=task_id,
+                status=status,
+                history=[
+                    Message(
+                        message_id=str(uuid.uuid4()),
+                        role=Role.agent,
+                        parts=[DataPart(data={"error": state["error"]})],
+                    )
+                ],
+            )
+        else:
+            return Task(
+                id=task_id,
+                context_id=task_id,
+                status=status,
+                history=[],
+            )
+
+    def _create_success_task(
+        self,
+        task_id: str,
+        context_id: str,
+        result: dict[str, Any],
+        message: Message,
+    ) -> Task:
+        """
+        Create a successful task response.
+
+        Args:
+            task_id: Task ID.
+            context_id: Context ID.
+            result: Result data.
+            message: Original incoming message.
+
+        Returns:
+            Task with completed status and result.
+        """
+        logger.info("Creating success task", task_id=task_id)
+
+        return Task(
+            id=task_id,
+            context_id=context_id,
+            status=TaskStatus.completed,
+            history=[
+                message,  # Include original message
+                Message(
+                    message_id=str(uuid.uuid4()),
+                    role=Role.agent,
+                    parts=[DataPart(data=result)],
+                ),
+            ],
+        )
+
+    def _create_error_task(
+        self,
+        task_id: str,
+        context_id: str,
+        error: str,
+    ) -> Task:
+        """
+        Create a failed task response.
+
+        Args:
+            task_id: Task ID.
+            context_id: Context ID.
+            error: Error message.
+
+        Returns:
+            Task with failed status and error.
+        """
+        logger.error("Creating error task", task_id=task_id, error=error)
+
+        return Task(
+            id=task_id,
+            context_id=context_id,
+            status=TaskStatus.failed,
+            history=[
+                Message(
+                    message_id=str(uuid.uuid4()),
+                    role=Role.agent,
+                    parts=[DataPart(data={"error": error})],
+                )
+            ],
+        )
+
+    # Stub implementations for abstract methods (not used in basic implementation)
+    async def on_message_send_stream(self, params: Any, context: Any = None) -> Any:
+        """Not implemented - we don't support streaming."""
+        raise NotImplementedError("Streaming not supported")
+
+    async def on_cancel_task(self, params: Any, context: Any = None) -> Any:
+        """Not implemented - task cancellation not supported."""
+        return None
+
+    async def on_resubscribe_to_task(self, params: Any, context: Any = None) -> Any:
+        """Not implemented - task resubscription not supported."""
+        return None
+
+    async def on_get_task_push_notification_config(self, params: Any, context: Any = None) -> Any:
+        """Not implemented - push notifications not supported."""
+        return None
+
+    async def on_set_task_push_notification_config(self, params: Any, context: Any = None) -> Any:
+        """Not implemented - push notifications not supported."""
+        return None
+
+    async def on_list_task_push_notification_config(self, params: Any, context: Any = None) -> Any:
+        """Not implemented - push notifications not supported."""
+        return []
+
+    async def on_delete_task_push_notification_config(self, params: Any, context: Any = None) -> Any:
+        """Not implemented - push notifications not supported."""
+        return None
+
+
 class MailAgent:
     """
-    Mail Agent for handling email operations via A2A protocol.
+    Mail Agent for handling email operations via A2A protocol using official SDK.
 
     This agent provides two skills:
     1. send-email: Compose professional emails using LLM and send via SMTP
     2. receive-email-webhook: Process incoming email webhooks and extract data
 
-    The agent follows the A2A protocol for task handling and integrates
-    with the A2A registry for service discovery.
+    The agent uses the official a2a-sdk for spec-compliant A2A protocol implementation
+    and integrates with the A2A registry for service discovery.
 
     Attributes:
         settings: Application settings.
         smtp_client: SMTP client for sending emails.
         composer: Email composer using LLM.
         parser: Email parser using LLM.
-        app: FastAPI application for A2A endpoints.
         agent_card: A2A agent card describing capabilities.
+        handler: Request handler for A2A messages.
+        a2a_app: SDK FastAPI application.
+        app: Final FastAPI application.
     """
 
     AGENT_NAME = "mail-agent"
@@ -89,7 +441,7 @@ class MailAgent:
         Raises:
             ValidationError: If settings are invalid.
         """
-        logger.info("Initializing Mail Agent")
+        logger.info("Initializing Mail Agent with SDK")
 
         if not settings:
             logger.error("Settings are required but not provided")
@@ -114,109 +466,53 @@ class MailAgent:
         logger.info("Initializing email parser")
         self.parser = EmailParser()
 
-        # Create FastAPI app for A2A endpoints
-        logger.info("Creating FastAPI app")
-        self.app = self._create_app()
-
-        # Create agent card
-        logger.info("Creating agent card")
+        # Create agent card (SDK version)
+        logger.info("Creating SDK agent card")
         self.agent_card = self._create_agent_card()
 
+        # Create request handler
+        logger.info("Creating request handler")
+        self.handler = MailAgentRequestHandler(self)
+
+        # Create SDK A2A application
+        logger.info("Creating SDK A2A FastAPI application")
+        self.a2a_app = A2ARESTFastAPIApplication(
+            agent_card=self.agent_card,
+            http_handler=self.handler,
+        )
+
+        # Build FastAPI app
+        logger.info("Building FastAPI app from SDK")
+        self.app = self.a2a_app.build()
+
+        # Add health check endpoint
+        @self.app.get("/health")
+        async def health_check() -> dict[str, str]:
+            """Health check endpoint."""
+            logger.debug("Health check requested")
+            return {"status": "healthy", "agent": self.AGENT_NAME}
+
         logger.info(
-            "Mail Agent initialized",
+            "Mail Agent initialized successfully with SDK",
             agent_name=self.AGENT_NAME,
             version=self.AGENT_VERSION,
         )
 
-    def _create_app(self) -> FastAPI:
-        """
-        Create FastAPI application with A2A endpoints.
-
-        Returns:
-            Configured FastAPI application.
-        """
-        logger.debug("Creating FastAPI application")
-
-        app = FastAPI(
-            title=f"{self.AGENT_NAME} A2A Server",
-            description=self.AGENT_DESCRIPTION,
-            version=self.AGENT_VERSION,
-        )
-
-        # A2A Protocol Endpoints
-        @app.get("/.well-known/agent.json")
-        async def get_agent_card() -> dict[str, Any]:
-            """Get agent card describing capabilities."""
-            logger.info("Agent card requested")
-            return self.agent_card.model_dump()
-
-        @app.post("/tasks")
-        async def create_task(request: A2ATaskRequest) -> A2ATaskResponse:
-            """Handle A2A task requests."""
-            logger.info(
-                "Task request received",
-                task_id=request.task_id,
-                skill_id=request.skill_id,
-            )
-            try:
-                result = await self.handle_task(request)
-                return result
-            except Exception as e:
-                logger.error(
-                    "Task handling failed",
-                    task_id=request.task_id,
-                    error=str(e),
-                    error_type=type(e).__name__,
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail=str(e),
-                )
-
-        @app.get("/tasks/{task_id}")
-        async def get_task_status(task_id: str) -> A2ATaskResponse:
-            """Get status of a specific task."""
-            logger.info("Task status requested", task_id=task_id)
-
-            if task_id not in self._active_tasks:
-                logger.error("Task not found", task_id=task_id)
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Task not found: {task_id}",
-                )
-
-            state = self._active_tasks[task_id]
-
-            return A2ATaskResponse(
-                task_id=state["task_id"],
-                status=state["status"],
-                result=state.get("result"),
-                error=state.get("error"),
-            )
-
-        @app.get("/health")
-        async def health_check() -> dict[str, str]:
-            """Health check endpoint."""
-            logger.debug("Health check requested")
-            return {"status": "healthy"}
-
-        logger.debug("FastAPI application created")
-        return app
-
     def _create_agent_card(self) -> AgentCard:
         """
-        Create A2A agent card describing capabilities.
+        Create A2A agent card describing capabilities using SDK models.
 
         Returns:
-            AgentCard instance.
+            SDK AgentCard instance.
         """
-        logger.debug("Creating agent card")
+        logger.debug("Creating SDK agent card")
 
         skills = [
             AgentSkill(
                 id="send-email",
                 name="Send Email",
                 description="Compose and send professional emails using LLM-powered composition",
+                tags=["email", "smtp", "composition"],
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -248,6 +544,7 @@ class MailAgent:
                 id="receive-email-webhook",
                 name="Receive Email Webhook",
                 description="Process incoming email webhooks and extract structured data",
+                tags=["email", "webhook", "parsing"],
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -274,6 +571,7 @@ class MailAgent:
             ),
         ]
 
+        # Use snake_case for SDK compatibility
         card = AgentCard(
             name=self.AGENT_NAME,
             description=self.AGENT_DESCRIPTION,
@@ -285,12 +583,21 @@ class MailAgent:
                 "llm_powered": True,
             },
             skills=skills,
-            defaultInputModes=["data"],
-            defaultOutputModes=["data"],
+            default_input_modes=["data"],  # SDK uses snake_case
+            default_output_modes=["data"],  # SDK uses snake_case
         )
 
-        logger.debug("Agent card created", skills_count=len(skills))
+        logger.debug("SDK agent card created", skills_count=len(skills))
         return card
+
+    def get_app(self) -> FastAPI:
+        """
+        Get the FastAPI application.
+
+        Returns:
+            FastAPI application instance.
+        """
+        return self.app
 
     async def start(self) -> None:
         """
@@ -410,93 +717,6 @@ class MailAgent:
                 details={"error": str(e), "error_type": type(e).__name__},
             ) from e
 
-    async def handle_task(self, request: A2ATaskRequest) -> A2ATaskResponse:
-        """
-        Handle an A2A task request.
-
-        Routes the task to the appropriate skill handler based on skill_id.
-
-        Args:
-            request: A2A task request.
-
-        Returns:
-            A2A task response with result or error.
-
-        Raises:
-            A2AError: If skill is not supported or task handling fails.
-        """
-        logger.info(
-            "Handling task",
-            task_id=request.task_id,
-            skill_id=request.skill_id,
-        )
-
-        # Create initial state
-        state: MailAgentState = {
-            "task_id": request.task_id,
-            "skill_id": request.skill_id,  # type: ignore
-            "status": "submitted",
-            "email_task": {},  # type: ignore
-            "result": None,
-            "error": None,
-            "payload": request.payload,
-        }
-
-        self._active_tasks[request.task_id] = state
-
-        try:
-            # Update status to working
-            state["status"] = "working"
-
-            # Route to skill handler
-            if request.skill_id == "send-email":
-                result = await self._handle_send_email(request.payload)
-                state["result"] = result
-                state["status"] = "completed"
-
-            elif request.skill_id == "receive-email-webhook":
-                result = await self._handle_receive_email_webhook(request.payload)
-                state["result"] = result
-                state["status"] = "completed"
-
-            else:
-                logger.error("Unsupported skill", skill_id=request.skill_id)
-                raise A2AError(
-                    message=f"Unsupported skill: {request.skill_id}",
-                    agent_name=self.AGENT_NAME,
-                    task_id=request.task_id,
-                    skill_id=request.skill_id,
-                )
-
-            logger.info(
-                "Task completed successfully",
-                task_id=request.task_id,
-                skill_id=request.skill_id,
-            )
-
-            return A2ATaskResponse(
-                task_id=request.task_id,
-                status="completed",
-                result=state["result"],
-            )
-
-        except Exception as e:
-            logger.error(
-                "Task handling failed",
-                task_id=request.task_id,
-                error=str(e),
-                error_type=type(e).__name__,
-            )
-
-            state["status"] = "failed"
-            state["error"] = str(e)
-
-            return A2ATaskResponse(
-                task_id=request.task_id,
-                status="failed",
-                error=str(e),
-            )
-
     async def _handle_send_email(
         self,
         payload: dict[str, Any],
@@ -548,40 +768,72 @@ class MailAgent:
                 field="instructions",
             )
 
-        # Compose email using LLM
-        logger.info("Composing email with LLM")
-        composed = await self.composer.compose_email(
-            to_address=send_payload["to_address"],
-            instructions=send_payload["instructions"],
-            subject=send_payload["subject"],
+        logger.info(
+            "Composing email",
+            to=send_payload["to_address"],
+            has_subject=bool(send_payload["subject"]),
+            has_thread_id=bool(send_payload["thread_id"]),
         )
 
-        logger.info(
-            "Email composed successfully",
-            subject=composed["subject"],
-            body_length=len(composed["body"]),
-        )
+        # Compose email using LLM
+        try:
+            composed = await self.composer.compose_email(
+                to_address=send_payload["to_address"],
+                instructions=send_payload["instructions"],
+                subject=send_payload["subject"],
+            )
+
+            logger.info(
+                "Email composed successfully",
+                subject=composed["subject"],
+                body_length=len(composed["body"]),
+            )
+        except Exception as e:
+            logger.error(
+                "Email composition failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            raise EmailError(
+                message=f"Email composition failed: {str(e)}",
+                details={"error": str(e), "error_type": type(e).__name__},
+            ) from e
 
         # Send email via SMTP
-        logger.info("Sending email via SMTP")
-        message_id = await self.smtp_client.send_email(
-            to_address=send_payload["to_address"],
-            subject=composed["subject"],
-            body_text=composed["body"],
-            thread_id=send_payload["thread_id"],
-        )
+        try:
+            logger.info("Sending email via SMTP")
+            message_id = await self.smtp_client.send_email(
+                to_address=send_payload["to_address"],
+                subject=composed["subject"],
+                body=composed["body"],
+                thread_id=send_payload["thread_id"],
+            )
 
-        logger.info("Email sent successfully", message_id=message_id)
+            logger.info(
+                "Email sent successfully",
+                message_id=message_id,
+                to=send_payload["to_address"],
+            )
+        except Exception as e:
+            logger.error(
+                "Email sending failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            raise EmailError(
+                message=f"Email sending failed: {str(e)}",
+                details={"error": str(e), "error_type": type(e).__name__},
+            ) from e
 
         # Create result
         result: SendEmailResult = {
             "message_id": message_id,
-            "to_address": send_payload["to_address"],
             "subject": composed["subject"],
             "body_preview": composed["body"][:200],
-            "sent_at": datetime.utcnow().isoformat(),
+            "thread_id": send_payload.get("thread_id"),
         }
 
+        logger.info("Send email completed", message_id=message_id)
         return result
 
     async def _handle_receive_email_webhook(
@@ -591,13 +843,13 @@ class MailAgent:
         """
         Handle receive-email-webhook skill.
 
-        Parses incoming email and extracts structured data.
+        Processes incoming email webhook and extracts structured data.
 
         Args:
             payload: Webhook payload with email data.
 
         Returns:
-            Receive email webhook result with parsed data.
+            Parsed webhook result.
 
         Raises:
             ValidationError: If required payload fields are missing.
@@ -625,7 +877,15 @@ class MailAgent:
             ) from e
 
         # Validate required fields
-        required_fields = ["event", "message_id", "from_address", "to_address", "subject", "body", "received_at"]
+        required_fields = [
+            "event",
+            "message_id",
+            "from_address",
+            "to_address",
+            "subject",
+            "body",
+            "received_at",
+        ]
         for field in required_fields:
             if not webhook_payload.get(field):  # type: ignore
                 logger.error(f"Missing required field: {field}")
@@ -634,27 +894,72 @@ class MailAgent:
                     field=field,
                 )
 
-        # Parse email content using LLM
-        logger.info("Parsing email content with LLM")
-        parsed_data = await self.parser.parse_email(
+        logger.info(
+            "Processing email webhook",
+            message_id=webhook_payload["message_id"],
             from_address=webhook_payload["from_address"],
-            subject=webhook_payload["subject"],
-            body=webhook_payload["body"],
         )
 
-        logger.info(
-            "Email parsed successfully",
-            intent=parsed_data.get("intent"),
-            requires_response=parsed_data.get("requires_response"),
-        )
+        # Parse email content using LLM
+        try:
+            parsed = await self.parser.parse_email(
+                from_address=webhook_payload["from_address"],
+                subject=webhook_payload["subject"],
+                body=webhook_payload["body"],
+            )
+
+            logger.info(
+                "Email parsed successfully",
+                message_id=webhook_payload["message_id"],
+                intent=parsed.get("intent"),
+            )
+        except Exception as e:
+            logger.error(
+                "Email parsing failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            # Non-fatal: return unparsed data
+            parsed = {
+                "intent": "unknown",
+                "extracted_data": {},
+                "sentiment": "neutral",
+            }
+            logger.warning("Using fallback parsing result")
 
         # Create result
         result: ReceiveEmailWebhookResult = {
             "message_id": webhook_payload["message_id"],
             "from_address": webhook_payload["from_address"],
-            "subject": webhook_payload["subject"],
-            "parsed_data": parsed_data,
+            "thread_id": webhook_payload.get("thread_id"),
+            "parsed_content": parsed,
             "processed_at": datetime.utcnow().isoformat(),
         }
 
+        logger.info(
+            "Receive email webhook completed",
+            message_id=webhook_payload["message_id"],
+        )
         return result
+
+
+# Module-level function for creating app (for uvicorn)
+def create_mail_agent_app() -> FastAPI:
+    """
+    Create and return Mail Agent FastAPI application.
+
+    This function is used by uvicorn to start the server.
+
+    Returns:
+        FastAPI application instance.
+    """
+    from info_agent.config import get_settings
+
+    settings = get_settings()
+    agent = MailAgent(settings)
+
+    # Start agent in background (registers with registry)
+    import asyncio
+    asyncio.create_task(agent.start())
+
+    return agent.get_app()

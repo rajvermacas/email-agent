@@ -149,12 +149,12 @@ async def query_a2a_registry(state: SupervisorState) -> dict[str, Any]:
     logger.info(f"Querying A2A Registry for workflow {workflow_id}")
 
     # Import here to avoid circular dependency
-    from info_agent.a2a.client import A2AClient
+    from info_agent.a2a.sdk_client_wrapper import get_sdk_client
     from info_agent.config import get_settings
 
     try:
         settings = get_settings()
-        client = A2AClient(settings.a2a_registry_url)
+        client = get_sdk_client(registry_url=settings.a2a_registry_url)
 
         logger.debug(f"Fetching agents from registry for workflow {workflow_id}")
         agents = await client.list_agents()
@@ -389,7 +389,7 @@ def determine_next_action(state: SupervisorState) -> str:
 
 async def invoke_mail_agent_send(state: SupervisorState) -> dict[str, Any]:
     """
-    Invoke Mail Agent to send email.
+    Invoke Mail Agent to send email using SDK client.
 
     Args:
         state: Current workflow state.
@@ -402,71 +402,84 @@ async def invoke_mail_agent_send(state: SupervisorState) -> dict[str, Any]:
     """
     workflow_id = state["workflow_id"]
     target_email = state.get("target_email", "")
+    target_name = state.get("target_name", "Sir/Madam")
+    requested_info = state.get("requested_info", "")
+
     logger.info(f"Invoking Mail Agent to send email to {target_email}")
 
-    from info_agent.a2a.client import A2AClient
+    from info_agent.a2a.sdk_client_wrapper import get_sdk_client
     from info_agent.config import get_settings
-    from info_agent.llm import get_gemini_llm
 
     try:
-        # Compose email content using LLM
-        llm = get_gemini_llm()
+        settings = get_settings()
+        client = get_sdk_client(registry_url=settings.a2a_registry_url)
 
-        compose_prompt = f"""
-Compose a professional email requesting the following information:
+        # Build agent URL
+        agent_url = f"http://{settings.host}:{settings.mail_agent_port}"
 
-To: {state.get('target_name', 'Sir/Madam')} ({target_email})
-Request: {state.get('requested_info', '')}
+        # Create instructions for Mail Agent's LLM composer
+        instructions = f"""
+Compose a professional email to {target_name} requesting the following information:
+
+{requested_info}
 
 The email should be:
 - Polite and professional
 - Clear about what information is needed
 - Include a call to action
-
-Respond with just the email body (no subject line, no greeting/signature boilerplate).
 """
 
-        response = await llm.ainvoke(compose_prompt)
-        email_body = response.content.strip()
+        # Build subject line
+        subject = f"Information Request: {requested_info[:50]}" + (
+            "..." if len(requested_info) > 50 else ""
+        )
 
-        # Send via Mail Agent
-        settings = get_settings()
-        client = A2AClient(f"http://{settings.host}:{settings.mail_agent_port}")
-
-        subject = f"Information Request: {state.get('requested_info', '')[:50]}..."
-
+        # Send task via SDK client wrapper
+        # Use correct field names: to_address, instructions (not to, body)
         task_result = await client.send_task(
+            agent_url=agent_url,
             skill_id="send-email",
             payload={
-                "to": target_email,
+                "to_address": target_email,
+                "instructions": instructions,
                 "subject": subject,
-                "body": email_body,
             },
+            agent_name="mail-agent",
         )
 
         message_id = task_result.get("message_id", "")
-        thread_id = task_result.get("thread_id", "")
+        thread_id = task_result.get("thread_id")
+        body_preview = task_result.get("body_preview", "")
 
-        logger.info(f"Email sent for workflow {workflow_id}, message_id: {message_id}")
+        logger.info(
+            f"Email sent for workflow {workflow_id}",
+            message_id=message_id,
+            thread_id=thread_id,
+        )
 
         return {
             "sent_email_id": message_id,
             "email_thread_id": thread_id,
             "sent_email_subject": subject,
-            "sent_email_body": email_body,
+            "sent_email_body": body_preview,  # Preview only
             "current_step": state.get("current_step", 0) + 1,
             "status": WorkflowStatus.WAITING_FOR_RESPONSE.value,
             "updated_at": datetime.utcnow().isoformat(),
             "audit_log": add_audit_entry(
                 state,
                 action="send_email",
-                details=f"Sent email to {target_email}, thread_id: {thread_id}",
+                details=f"Sent email to {target_email}, message_id: {message_id}",
                 metadata={"message_id": message_id, "thread_id": thread_id},
             ),
         }
 
     except Exception as e:
-        logger.error(f"Failed to send email for workflow {workflow_id}: {e}")
+        logger.error(
+            f"Failed to send email for workflow {workflow_id}",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
         raise A2AError(
             message=f"Failed to send email: {e}",
             agent_name="mail-agent",
