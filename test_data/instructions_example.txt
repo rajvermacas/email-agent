@@ -1,0 +1,4 @@
+Send mail to raj@gmail.com asking for an Excel sheet containing 10 rows of food recipes.
+The Excel should have columns: Recipe Name, Ingredients, Cooking Time, Difficulty Level.
+
+Please be polite and professional in the email. Mention that this is for a recipe compilation project.

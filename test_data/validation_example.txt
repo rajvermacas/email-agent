@@ -1,0 +1,19 @@
+The reply should have an attachment with:
+1. An Excel file (.xlsx format)
+2. Exactly 10 rows of food recipes (excluding header row)
+3. Columns: Recipe Name, Ingredients, Cooking Time, Difficulty Level
+4. All cells should be filled (no empty values)
+5. Difficulty Level should be one of: Easy, Medium, Hard
+
+Validation rules:
+- File type must be .xlsx (Microsoft Excel format)
+- Header row is required and must match expected column names
+- Recipe Name: Text, minimum 3 characters
+- Ingredients: Text, comma-separated list of ingredients
+- Cooking Time: Text or number (e.g., "30 minutes" or "30")
+- Difficulty Level: Must be exactly "Easy", "Medium", or "Hard" (case-insensitive)
+
+If validation fails:
+- Send detailed failure report to requester
+- List all validation errors found
+- Request re-submission with corrections

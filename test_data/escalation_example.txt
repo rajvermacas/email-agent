@@ -1,0 +1,13 @@
+If raj@gmail.com is not available, out of office, or doesn't reply within 48 hours, reach out to vishal@gmail.com.
+
+If the requested user has clarifying questions not covered in the FAQ, first email mrinal@gmail.com to get answers, then share with raj@gmail.com.
+
+Escalation contacts:
+- Primary: raj@gmail.com (target)
+- Secondary: vishal@gmail.com (if primary unavailable)
+- Question Handler: mrinal@gmail.com (for FAQ escalation)
+
+Retry policy:
+- Maximum 3 retry attempts before escalation
+- Wait 24 hours between retry attempts
+- After 3 failed attempts, escalate to secondary contact

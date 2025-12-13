@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+
+{% block title %}Create Workflow - Info-Agent{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Create New Workflow</h1>
+            <p class="mt-1 text-sm text-gray-500">
+                Define your information request by providing instructions and configuration.
+            </p>
+        </div>
+        <a href="/" class="text-sm text-primary-600 hover:text-primary-700">
+            Back to Dashboard
+        </a>
+    </div>
+
+    <!-- Create Form -->
+    <form id="create-workflow-form" class="space-y-6">
+        <!-- Instructions -->
+        <div class="bg-white shadow rounded-lg p-6">
+            <h2 class="text-lg font-medium text-gray-900 mb-4">Instructions</h2>
+            <p class="text-sm text-gray-500 mb-4">
+                Describe what information you need and who to request it from.
+            </p>
+            <textarea id="instructions"
+                      name="instructions"
+                      rows="4"
+                      required
+                      class="shadow-sm focus:ring-primary-500 focus:border-primary-500 block w-full sm:text-sm border-gray-300 rounded-md"
+                      placeholder="e.g., Send mail to raj@gmail.com asking for an Excel sheet containing 10 rows of food recipes with columns: Recipe Name, Ingredients, Cooking Time, Difficulty Level."></textarea>
+        </div>
+
+        <!-- FAQ -->
+        <div class="bg-white shadow rounded-lg p-6">
+            <h2 class="text-lg font-medium text-gray-900 mb-4">FAQ (Optional)</h2>
+            <p class="text-sm text-gray-500 mb-4">
+                Provide common questions and answers for automated responses.
+            </p>
+            <textarea id="faq"
+                      name="faq"
+                      rows="4"
+                      class="shadow-sm focus:ring-primary-500 focus:border-primary-500 block w-full sm:text-sm border-gray-300 rounded-md"
+                      placeholder="Q: What format should the recipes be in?
+A: Please provide an Excel file (.xlsx) with the specified columns.
+
+Q: How many recipes are needed?
+A: We need exactly 10 recipes."></textarea>
+        </div>
+
+        <!-- Escalation Rules -->
+        <div class="bg-white shadow rounded-lg p-6">
+            <h2 class="text-lg font-medium text-gray-900 mb-4">Escalation Rules (Optional)</h2>
+            <p class="text-sm text-gray-500 mb-4">
+                Define what happens if the target doesn't respond or has questions not in the FAQ.
+            </p>
+            <textarea id="escalation_rules"
+                      name="escalation_rules"
+                      rows="4"
+                      class="shadow-sm focus:ring-primary-500 focus:border-primary-500 block w-full sm:text-sm border-gray-300 rounded-md"
+                      placeholder="If the target doesn't reply within 48 hours, reach out to vishal@gmail.com.
+If there are questions not covered in the FAQ, escalate to mrinal@gmail.com for answers."></textarea>
+        </div>
+
+        <!-- Validation Criteria -->
+        <div class="bg-white shadow rounded-lg p-6">
+            <h2 class="text-lg font-medium text-gray-900 mb-4">Validation Criteria (Optional)</h2>
+            <p class="text-sm text-gray-500 mb-4">
+                Specify how to validate received documents.
+            </p>
+            <textarea id="validation_criteria"
+                      name="validation_criteria"
+                      rows="4"
+                      class="shadow-sm focus:ring-primary-500 focus:border-primary-500 block w-full sm:text-sm border-gray-300 rounded-md"
+                      placeholder="The reply should have an attachment with:
+1. An Excel file (.xlsx format)
+2. Exactly 10 rows of food recipes
+3. Required columns: Recipe Name, Ingredients, Cooking Time, Difficulty Level
+4. All cells should be filled (no empty values)"></textarea>
+        </div>
+
+        <!-- Submit -->
+        <div class="flex justify-end space-x-3">
+            <a href="/"
+               class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500">
+                Cancel
+            </a>
+            <button type="submit"
+                    class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500">
+                <svg class="w-5 h-5 mr-2 animate-spin hidden" id="submit-spinner" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Create Workflow
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('create-workflow-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const spinner = document.getElementById('submit-spinner');
+    spinner.classList.remove('hidden');
+
+    const formData = {
+        instructions: document.getElementById('instructions').value,
+        faq: document.getElementById('faq').value,
+        escalation_rules: document.getElementById('escalation_rules').value,
+        validation_criteria: document.getElementById('validation_criteria').value,
+    };
+
+    try {
+        const response = await fetch('/api/workflows', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(formData),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to create workflow');
+        }
+
+        const data = await response.json();
+        window.location.href = `/workflows/${data.workflow_id}`;
+    } catch (error) {
+        alert('Error creating workflow: ' + error.message);
+        spinner.classList.add('hidden');
+    }
+});
+</script>
+{% endblock %}

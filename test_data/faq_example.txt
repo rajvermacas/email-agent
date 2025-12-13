@@ -1,0 +1,20 @@
+Q: What format should the recipes be in?
+A: Please provide an Excel file (.xlsx) with columns for Recipe Name, Ingredients, Cooking Time, and Difficulty Level.
+
+Q: How many recipes are needed?
+A: We need exactly 10 recipes.
+
+Q: What difficulty levels should be used?
+A: Use Easy, Medium, or Hard for difficulty levels.
+
+Q: Can I submit a PDF instead?
+A: No, we specifically need an Excel file (.xlsx format) for data processing purposes.
+
+Q: What if I don't have all the information for a recipe?
+A: Please ensure all cells are filled. If cooking time varies, provide an estimate or range.
+
+Q: Is there a deadline for submission?
+A: Please submit within 48 hours of receiving this request.
+
+Q: Who should I contact if I have more questions?
+A: For any questions not covered here, your inquiry will be forwarded to our team lead who will respond promptly.
