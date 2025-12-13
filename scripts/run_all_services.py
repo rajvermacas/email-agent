@@ -40,9 +40,15 @@ async def main() -> None:
     logger = get_logger(__name__)
     logger.info("Starting all Info-Agent services")
 
-    # Track running tasks
+    # Track running tasks and server instances for cleanup
     tasks: list[asyncio.Task] = []
     shutdown_event = asyncio.Event()
+
+    # Store server instances at module scope for cleanup
+    email_server = None
+    gateway_server = None
+    mail_agent_server = None
+    mail_agent = None
 
     def handle_shutdown(sig: signal.Signals) -> None:
         """Handle shutdown signals."""
@@ -67,60 +73,83 @@ async def main() -> None:
 
         # Create email server task (but don't await yet)
         async def run_email_server() -> None:
+            nonlocal email_server
             try:
                 await email_server.start()
             except asyncio.CancelledError:
-                logger.info("Email server task cancelled")
+                logger.info("Email server task cancelled, shutting down gracefully...")
+                if email_server is not None:
+                    await email_server.stop()
+                logger.info("Email server stopped")
+                raise
             except Exception as e:
                 logger.error("Email server error", error=str(e))
+                if email_server is not None:
+                    await email_server.stop()
+                raise
 
         # Create gateway server task
         async def run_gateway() -> None:
+            nonlocal gateway_server
             config = uvicorn.Config(
                 app,
                 host=settings.host,
                 port=settings.gateway_port,
                 log_level=settings.log_level.lower(),
             )
-            server = uvicorn.Server(config)
+            gateway_server = uvicorn.Server(config)
             try:
-                await server.serve()
+                await gateway_server.serve()
             except asyncio.CancelledError:
-                logger.info("Gateway server task cancelled")
+                logger.info("Gateway server task cancelled, shutting down gracefully...")
+                if gateway_server is not None:
+                    gateway_server.should_exit = True
+                logger.info("Gateway server stopped")
+                raise
             except Exception as e:
                 logger.error("Gateway server error", error=str(e))
+                if gateway_server is not None:
+                    gateway_server.should_exit = True
+                raise
 
         # Create Mail Agent task
         async def run_mail_agent() -> None:
-            agent = None
+            nonlocal mail_agent, mail_agent_server
             try:
                 # Wait for Gateway and Email Server to be ready
                 logger.info("Waiting for Gateway and SMTP server to be ready...")
                 await asyncio.sleep(3)
 
                 logger.info("Creating Mail Agent instance")
-                agent = MailAgent(settings)
+                mail_agent = MailAgent(settings)
 
                 logger.info("Starting Mail Agent and registering with A2A registry")
-                await agent.start()
+                await mail_agent.start()
 
                 logger.info("Starting Mail Agent A2A server")
                 config = uvicorn.Config(
-                    agent.app,
+                    mail_agent.app,
                     host=settings.host,
                     port=settings.mail_agent_port,
                     log_level=settings.log_level.lower(),
                 )
-                server = uvicorn.Server(config)
-                await server.serve()
+                mail_agent_server = uvicorn.Server(config)
+                await mail_agent_server.serve()
             except asyncio.CancelledError:
-                logger.info("Mail Agent task cancelled")
-                if agent is not None:
-                    await agent.shutdown()
+                logger.info("Mail Agent task cancelled, shutting down gracefully...")
+                if mail_agent is not None:
+                    await mail_agent.shutdown()
+                if mail_agent_server is not None:
+                    mail_agent_server.should_exit = True
+                logger.info("Mail Agent stopped")
+                raise
             except Exception as e:
                 logger.error("Mail Agent error", error=str(e))
-                if agent is not None:
-                    await agent.shutdown()
+                if mail_agent is not None:
+                    await mail_agent.shutdown()
+                if mail_agent_server is not None:
+                    mail_agent_server.should_exit = True
+                raise
 
         # Start all services
         tasks.append(asyncio.create_task(run_email_server()))
@@ -151,9 +180,45 @@ async def main() -> None:
             if not task.done():
                 task.cancel()
 
-        # Wait for tasks to complete
+        # Wait for tasks to complete with timeout
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Some tasks did not complete within timeout")
+
+        # Ensure all servers are stopped (backup cleanup)
+        logger.info("Performing final cleanup...")
+        if email_server is not None:
+            try:
+                await email_server.stop()
+                logger.info("Email server final cleanup complete")
+            except Exception as e:
+                logger.warning("Error during email server cleanup", error=str(e))
+
+        if gateway_server is not None:
+            try:
+                gateway_server.should_exit = True
+                logger.info("Gateway server final cleanup complete")
+            except Exception as e:
+                logger.warning("Error during gateway server cleanup", error=str(e))
+
+        if mail_agent is not None:
+            try:
+                await mail_agent.shutdown()
+                logger.info("Mail agent final cleanup complete")
+            except Exception as e:
+                logger.warning("Error during mail agent cleanup", error=str(e))
+
+        if mail_agent_server is not None:
+            try:
+                mail_agent_server.should_exit = True
+                logger.info("Mail agent server final cleanup complete")
+            except Exception as e:
+                logger.warning("Error during mail agent server cleanup", error=str(e))
 
         logger.info("All services stopped")
 
