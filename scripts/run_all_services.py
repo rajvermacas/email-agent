@@ -30,15 +30,21 @@ async def main() -> None:
     """Main entry point for running all services."""
     settings = get_settings()
 
-    # Setup logging
+    # Create logs directory if it doesn't exist
+    from pathlib import Path
+    logs_dir = Path(__file__).parent.parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+
+    # Setup main logging to console
     setup_logging(
         level=settings.log_level,
         log_format=settings.log_format,
-        service_name="info-agent-all",
+        service_name="info-agent-orchestrator",
     )
 
     logger = get_logger(__name__)
     logger.info("Starting all Info-Agent services")
+    logger.info(f"Log files will be written to: {logs_dir.absolute()}")
 
     # Track running tasks and server instances for cleanup
     tasks: list[asyncio.Task] = []
@@ -74,6 +80,23 @@ async def main() -> None:
         # Create email server task (but don't await yet)
         async def run_email_server() -> None:
             nonlocal email_server
+            import logging
+
+            # Add file handler for email server logs
+            email_log_file = logs_dir / "email_server.log"
+            file_handler = logging.FileHandler(email_log_file, mode='a')
+            file_handler.setLevel(logging.DEBUG)
+
+            # Get email server related loggers
+            email_loggers = [
+                logging.getLogger("info_agent.email"),
+                logging.getLogger("aiosmtpd"),
+            ]
+            for log in email_loggers:
+                log.addHandler(file_handler)
+
+            logger.info(f"Email Server logs → {email_log_file}")
+
             try:
                 await email_server.start()
             except asyncio.CancelledError:
@@ -81,16 +104,46 @@ async def main() -> None:
                 if email_server is not None:
                     await email_server.stop()
                 logger.info("Email server stopped")
+                # Clean up file handler
+                for log in email_loggers:
+                    log.removeHandler(file_handler)
+                file_handler.close()
                 raise
             except Exception as e:
                 logger.error("Email server error", error=str(e))
                 if email_server is not None:
                     await email_server.stop()
+                # Clean up file handler
+                for log in email_loggers:
+                    log.removeHandler(file_handler)
+                file_handler.close()
                 raise
 
         # Create gateway server task
         async def run_gateway() -> None:
             nonlocal gateway_server
+            import logging
+
+            # Add file handler for gateway logs
+            gateway_log_file = logs_dir / "gateway.log"
+            file_handler = logging.FileHandler(gateway_log_file, mode='a')
+            file_handler.setLevel(logging.DEBUG)
+
+            # Get gateway related loggers
+            gateway_loggers = [
+                logging.getLogger("info_agent.main"),
+                logging.getLogger("info_agent.api"),
+                logging.getLogger("info_agent.agents.supervisor"),
+                logging.getLogger("info_agent.workflow"),
+                logging.getLogger("info_agent.a2a"),
+                logging.getLogger("uvicorn"),
+                logging.getLogger("uvicorn.error"),
+            ]
+            for log in gateway_loggers:
+                log.addHandler(file_handler)
+
+            logger.info(f"Gateway Server logs → {gateway_log_file}")
+
             config = uvicorn.Config(
                 app,
                 host=settings.host,
@@ -105,16 +158,41 @@ async def main() -> None:
                 if gateway_server is not None:
                     gateway_server.should_exit = True
                 logger.info("Gateway server stopped")
+                # Clean up file handler
+                for log in gateway_loggers:
+                    log.removeHandler(file_handler)
+                file_handler.close()
                 raise
             except Exception as e:
                 logger.error("Gateway server error", error=str(e))
                 if gateway_server is not None:
                     gateway_server.should_exit = True
+                # Clean up file handler
+                for log in gateway_loggers:
+                    log.removeHandler(file_handler)
+                file_handler.close()
                 raise
 
         # Create Mail Agent task
         async def run_mail_agent() -> None:
             nonlocal mail_agent, mail_agent_server
+            import logging
+
+            # Add file handler for mail agent logs
+            mail_agent_log_file = logs_dir / "mail_agent.log"
+            file_handler = logging.FileHandler(mail_agent_log_file, mode='a')
+            file_handler.setLevel(logging.DEBUG)
+
+            # Get mail agent related loggers
+            mail_agent_loggers = [
+                logging.getLogger("info_agent.agents.mail"),
+                logging.getLogger("aiosmtplib"),
+            ]
+            for log in mail_agent_loggers:
+                log.addHandler(file_handler)
+
+            logger.info(f"Mail Agent logs → {mail_agent_log_file}")
+
             try:
                 # Wait for Gateway and Email Server to be ready
                 logger.info("Waiting for Gateway and SMTP server to be ready...")
@@ -142,6 +220,10 @@ async def main() -> None:
                 if mail_agent_server is not None:
                     mail_agent_server.should_exit = True
                 logger.info("Mail Agent stopped")
+                # Clean up file handler
+                for log in mail_agent_loggers:
+                    log.removeHandler(file_handler)
+                file_handler.close()
                 raise
             except Exception as e:
                 logger.error("Mail Agent error", error=str(e))
@@ -149,6 +231,10 @@ async def main() -> None:
                     await mail_agent.shutdown()
                 if mail_agent_server is not None:
                     mail_agent_server.should_exit = True
+                # Clean up file handler
+                for log in mail_agent_loggers:
+                    log.removeHandler(file_handler)
+                file_handler.close()
                 raise
 
         # Start all services

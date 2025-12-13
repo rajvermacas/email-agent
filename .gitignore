@@ -42,4 +42,6 @@ venv/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Data and logs
 data/
+logs/

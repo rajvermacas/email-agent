@@ -30,6 +30,7 @@ def setup_logging(
     level: str = "INFO",
     log_format: str = "console",
     service_name: str = "info-agent",
+    log_file: str | None = None,
 ) -> None:
     """
     Configure structured logging for the application.
@@ -38,6 +39,7 @@ def setup_logging(
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
         log_format: Output format - "json" for production, "console" for development.
         service_name: Name of the service for log context.
+        log_file: Optional file path for log output. If None, logs to stdout.
 
     Raises:
         ValueError: If level or log_format is invalid.
@@ -56,12 +58,23 @@ def setup_logging(
     log_level = getattr(logging, level.upper())
 
     # Configure standard library logging
-    logging.basicConfig(
-        format="%(message)s",
-        level=log_level,
-        stream=sys.stdout,
-        force=True,
-    )
+    if log_file:
+        # Log to file
+        logging.basicConfig(
+            format="%(message)s",
+            level=log_level,
+            filename=log_file,
+            filemode="a",  # Append mode
+            force=True,
+        )
+    else:
+        # Log to stdout
+        logging.basicConfig(
+            format="%(message)s",
+            level=log_level,
+            stream=sys.stdout,
+            force=True,
+        )
 
     # Reduce noise from third-party libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
