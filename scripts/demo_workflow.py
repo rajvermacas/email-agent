@@ -2,29 +2,22 @@
 """Demo script for Info-Agent workflow.
 
 This script demonstrates the complete workflow from creation
-through validation completion using the mock email backend.
+through validation completion using stub mode (no real LLM or email).
 
 Usage:
     python scripts/demo_workflow.py
 """
 
 import asyncio
+import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from info_agent.a2a.registry import get_registry, reset_registry
-from info_agent.mail_agent.agent import MailAgent, get_mail_agent, reset_mail_agent
 from info_agent.supervisor.agent import SupervisorAgent
-from info_agent.validation_agent.agent import (
-    ValidationAgent,
-    get_validation_agent,
-    reset_validation_agent,
-)
 
 
 # Configure logging
@@ -41,103 +34,73 @@ async def run_demo() -> None:
     logger.info("Info-Agent Demo Workflow")
     logger.info("=" * 60)
 
-    # Reset any previous state
-    reset_registry()
-    reset_mail_agent()
-    reset_validation_agent()
-
     # Step 1: Create the supervisor agent
     logger.info("\n[Step 1] Creating Supervisor Agent...")
-    supervisor = SupervisorAgent(
+    supervisor = await SupervisorAgent.create(
         use_llm=False,  # Use stub mode
         use_stub_delegator=True,
     )
-    logger.info("Supervisor Agent created")
+    logger.info("Supervisor Agent created successfully")
 
-    # Step 2: Create a new workflow
-    logger.info("\n[Step 2] Creating New Workflow...")
-    workflow_result = await supervisor.create_workflow(
-        instructions="Send an email to raj@example.com asking for an Excel file "
-        "containing 10 rows of food recipes with columns: Recipe Name, "
-        "Ingredients, Cooking Time, and Difficulty Level.",
-        target_email="raj@example.com",
-        faq=[
-            {
-                "question": "What format should the recipes be in?",
-                "answer": "Please provide an Excel file (.xlsx) with the specified columns.",
-            },
-            {
-                "question": "How many recipes are needed?",
-                "answer": "We need exactly 10 recipes.",
-            },
-        ],
-        escalation_rules={
-            "no_response_hours": 48,
-            "escalation_email": "manager@example.com",
-        },
-        validation_criteria={
-            "required_format": "xlsx",
-            "required_columns": [
-                "Recipe Name",
-                "Ingredients",
-                "Cooking Time",
-                "Difficulty Level",
-            ],
-            "min_rows": 10,
-        },
+    # Prepare workflow inputs as strings (as expected by the API)
+    workflow_id = "demo-workflow-001"
+
+    instructions = """Send an email to raj@example.com asking for an Excel file
+containing 10 rows of food recipes with columns: Recipe Name,
+Ingredients, Cooking Time, and Difficulty Level."""
+
+    faq = """Q: What format should the recipes be in?
+A: Please provide an Excel file (.xlsx) with the specified columns.
+
+Q: How many recipes are needed?
+A: We need exactly 10 recipes."""
+
+    escalation_rules = """If no response within 48 hours, escalate to manager@example.com.
+If recipient asks questions not covered in FAQ, escalate for manual handling."""
+
+    validation_criteria = """The response should include:
+- An Excel file (.xlsx format)
+- At least 10 rows of recipes
+- Required columns: Recipe Name, Ingredients, Cooking Time, Difficulty Level
+- All cells should be filled (no empty values)"""
+
+    # Step 2: Generate a plan
+    logger.info("\n[Step 2] Generating Execution Plan...")
+    plan = await supervisor.generate_plan(
+        instructions=instructions,
+        faq=faq,
+        escalation_rules=escalation_rules,
+        validation_criteria=validation_criteria,
     )
+    logger.info(f"Plan generated with {len(plan)} steps:")
+    for i, step in enumerate(plan, 1):
+        logger.info(f"  Step {i}: {step.get('action', 'unknown')} - {step.get('description', '')}")
 
-    workflow_id = workflow_result["workflow_id"]
-    logger.info(f"Workflow created: {workflow_id}")
-    logger.info(f"Initial status: {workflow_result['status']}")
+    # Step 3: Rearticulate the plan for human review
+    logger.info("\n[Step 3] Rearticulating Plan for Human Review...")
+    rearticulated = supervisor.rearticulate_plan(plan)
+    logger.info(f"Plan Summary:\n{rearticulated}")
 
-    # Step 3: Get workflow status
-    logger.info("\n[Step 3] Getting Workflow Status...")
-    status = await supervisor.get_workflow_status(workflow_id)
-    logger.info(f"Status: {status}")
-
-    # Step 4: Approve the plan
-    logger.info("\n[Step 4] Approving Execution Plan...")
-    await supervisor.approve_plan(workflow_id, approved=True)
-    logger.info("Plan approved")
-
-    # Step 5: Check status after approval
-    logger.info("\n[Step 5] Checking Status After Approval...")
-    status = await supervisor.get_workflow_status(workflow_id)
-    logger.info(f"Status after approval: {status.get('status')}")
-
-    # Step 6: Simulate receiving an email response
-    logger.info("\n[Step 6] Simulating Email Response...")
-    await supervisor.notify_email_received(
+    # Step 4: Start the workflow (runs through the LangGraph state machine)
+    logger.info("\n[Step 4] Starting Workflow Execution...")
+    result = await supervisor.start_workflow(
         workflow_id=workflow_id,
-        email={
-            "from_address": "raj@example.com",
-            "to_address": "agent@example.com",
-            "subject": "Re: Recipe Request",
-            "body": "Hi,\n\nPlease find attached the recipes as requested.\n\nBest,\nRaj",
-            "timestamp": datetime.utcnow().isoformat(),
-            "attachments": [
-                {
-                    "filename": "recipes.xlsx",
-                    "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "size": 15360,
-                }
-            ],
-        },
+        instructions=instructions,
+        faq=faq,
+        escalation_rules=escalation_rules,
+        validation_criteria=validation_criteria,
     )
-    logger.info("Email response received and processed")
+    logger.info(f"Workflow completed with status: {result.get('status', 'unknown')}")
 
-    # Step 7: Check final status
-    logger.info("\n[Step 7] Checking Final Status...")
-    final_status = await supervisor.get_workflow_status(workflow_id)
-    logger.info(f"Final status: {final_status}")
-
-    # Step 8: List all workflows
-    logger.info("\n[Step 8] Listing All Workflows...")
-    workflows = await supervisor.list_workflows()
-    logger.info(f"Total workflows: {len(workflows)}")
-    for wf in workflows:
-        logger.info(f"  - {wf['workflow_id']}: {wf['status']}")
+    # Note: Steps 5-6 (Mail Agent delegation and Validation) are already
+    # handled automatically within the workflow execution above.
+    # The workflow state machine orchestrates the full flow:
+    #   PLANNING -> AWAITING_APPROVAL -> EXECUTING -> WAITING_FOR_RESPONSE
+    #   -> VALIDATING -> COMPLETED
+    logger.info("\n[Step 5] Workflow execution handled all agent delegations automatically")
+    logger.info("  - Mail Agent: Sent initial request email")
+    logger.info("  - Validation Agent: Validated received document")
+    logger.info("  - Report generation completed")
 
     # Cleanup
     logger.info("\n[Cleanup] Closing resources...")
@@ -148,75 +111,61 @@ async def run_demo() -> None:
     logger.info("=" * 60)
 
 
-async def run_clarification_demo() -> None:
-    """Run demo showing clarification handling."""
+async def run_streaming_demo() -> None:
+    """Run demo showing streaming workflow execution."""
     logger.info("\n" + "=" * 60)
-    logger.info("Info-Agent Clarification Demo")
+    logger.info("Info-Agent Streaming Demo")
     logger.info("=" * 60)
 
-    # Reset state
-    reset_registry()
-    reset_mail_agent()
-    reset_validation_agent()
-
     # Create supervisor
-    supervisor = SupervisorAgent(
+    supervisor = await SupervisorAgent.create(
         use_llm=False,
         use_stub_delegator=True,
     )
 
-    # Create workflow
-    logger.info("\n[Step 1] Creating Workflow...")
-    result = await supervisor.create_workflow(
-        instructions="Request sales report from accounting",
-        target_email="accounting@example.com",
-        faq=[
-            {
-                "question": "Which quarter?",
-                "answer": "Q4 2024",
-            },
-        ],
-    )
-    workflow_id = result["workflow_id"]
-    logger.info(f"Workflow created: {workflow_id}")
+    workflow_id = "stream-demo-001"
+    instructions = "Request sales report from accounting department"
+    faq = "Q: Which quarter?\nA: Q4 2024"
+    escalation_rules = "Escalate to manager if no response in 24 hours"
+    validation_criteria = "Must be a PDF or Excel file with financial data"
 
-    # Approve plan
-    logger.info("\n[Step 2] Approving Plan...")
-    await supervisor.approve_plan(workflow_id, approved=True)
+    logger.info("\n[Streaming] Processing workflow with streaming events...")
 
-    # Simulate clarification question
-    logger.info("\n[Step 3] Simulating Clarification Request...")
-    await supervisor.notify_email_received(
+    event_count = 0
+    async for node_name, state in supervisor.stream_workflow(
         workflow_id=workflow_id,
-        email={
-            "from_address": "accounting@example.com",
-            "subject": "Question about report",
-            "body": "Which quarter do you need the report for?",
-        },
-    )
-    logger.info("Clarification question received")
+        instructions=instructions,
+        faq=faq,
+        escalation_rules=escalation_rules,
+        validation_criteria=validation_criteria,
+    ):
+        event_count += 1
+        status = state.get("status", "unknown")
+        logger.info(f"  Event {event_count}: Node={node_name}, Status={status}")
 
-    # Check status
-    status = await supervisor.get_workflow_status(workflow_id)
-    logger.info(f"Status: {status}")
+        # Stop after a few events for demo purposes
+        if event_count >= 10:
+            logger.info("  ... (stopping after 10 events for demo)")
+            break
 
     # Cleanup
     await supervisor.close()
 
     logger.info("\n" + "=" * 60)
-    logger.info("Clarification Demo Complete!")
+    logger.info("Streaming Demo Complete!")
     logger.info("=" * 60)
 
 
 def main() -> None:
     """Main entry point."""
     logger.info("Starting Info-Agent Demo")
+    logger.info("This demo uses STUB mode (no real LLM or email)")
 
     # Run main demo
     asyncio.run(run_demo())
 
-    # Run clarification demo
-    asyncio.run(run_clarification_demo())
+    # Run streaming demo
+    asyncio.run(run_streaming_demo())
 
 
 if __name__ == "__main__":

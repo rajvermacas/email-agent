@@ -274,3 +274,19 @@ MIT License - see LICENSE file for details.
 - [AG-UI Protocol](https://docs.ag-ui.com/)
 - [LangGraph Documentation](https://docs.langchain.com/langgraph)
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
+
+## Execution steps
+# 1. Email Server (port 8080 HTTP, 1025 SMTP)
+  python -m info_agent.email_server.runner
+
+  # 2. Gateway (port 8000)
+  python scripts/run_server.py
+
+  # 3. Mail Agent (port 8002)
+  python -m info_agent.agents.mail
+
+  # 4. Validation Agent (port 8003)
+  python -m info_agent.agents.validation
+
+  # Or run everything with the demo:
+  python scripts/run_demo.py

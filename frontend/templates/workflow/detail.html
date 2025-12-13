@@ -94,19 +94,16 @@
 <script>
 const workflowId = '{{ workflow_id }}';
 
-// Load initial workflow data
-async function loadWorkflow() {
+// Refresh workflow data without reconnecting SSE stream
+async function refreshWorkflowData() {
     try {
         const response = await fetch(`/api/workflows/${workflowId}`);
         if (!response.ok) throw new Error('Failed to load workflow');
 
         const data = await response.json();
         updateWorkflowUI(data);
-
-        // Connect to SSE stream
-        connectToStream();
     } catch (error) {
-        console.error('Error loading workflow:', error);
+        console.error('Error refreshing workflow:', error);
     }
 }
 
@@ -302,9 +299,17 @@ function handleSSEEvent(event) {
     console.log('SSE Event:', event);
     addActivityEntry(event);
 
-    // Reload workflow data on significant events
+    // Refresh workflow data on significant events (don't reconnect SSE)
     if (['RUN_FINISHED', 'RUN_ERROR', 'STATE_DELTA'].includes(event.type)) {
-        loadWorkflow();
+        refreshWorkflowData();
+    }
+
+    // Disconnect SSE when workflow is complete
+    if (['RUN_FINISHED', 'RUN_ERROR'].includes(event.type)) {
+        console.log('[AG-UI] Workflow finished, disconnecting SSE');
+        if (typeof InfoAgentSSE !== 'undefined') {
+            InfoAgentSSE.disconnect();
+        }
     }
 }
 
@@ -318,7 +323,7 @@ document.getElementById('approve-btn')?.addEventListener('click', async () => {
         });
 
         if (!response.ok) throw new Error('Failed to approve');
-        loadWorkflow();
+        refreshWorkflowData();
     } catch (error) {
         alert('Error approving plan: ' + error.message);
     }
@@ -336,13 +341,17 @@ document.getElementById('reject-btn')?.addEventListener('click', async () => {
         });
 
         if (!response.ok) throw new Error('Failed to reject');
-        loadWorkflow();
+        refreshWorkflowData();
     } catch (error) {
         alert('Error rejecting plan: ' + error.message);
     }
 });
 
-// Initialize
-loadWorkflow();
+// Initialize: load data first, then connect SSE stream once
+async function init() {
+    await refreshWorkflowData();
+    connectToStream();
+}
+init();
 </script>
 {% endblock %}

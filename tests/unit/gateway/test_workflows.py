@@ -529,7 +529,7 @@ class TestWorkflowStream:
             json={"instructions": "Test", "workflow_id": "wf-123"},
         )
 
-        response = client.post("/api/workflows/wf-123/stream")
+        response = client.get("/api/workflows/wf-123/stream")
 
         assert response.status_code == 200
         assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
@@ -542,6 +542,6 @@ class TestWorkflowStream:
 
     def test_stream_workflow_not_found(self, client: TestClient) -> None:
         """Test streaming non-existent workflow."""
-        response = client.post("/api/workflows/nonexistent/stream")
+        response = client.get("/api/workflows/nonexistent/stream")
 
         assert response.status_code == 404

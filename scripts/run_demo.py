@@ -3,10 +3,10 @@
 Demo runner for Info-Agent system.
 
 This script starts all required services for the demo:
-1. FastAPI Gateway (with embedded Supervisor + Registry)
-2. Mail Agent (A2A worker)
-3. Validation Agent (A2A worker)
-4. Mock Email Server
+1. Mock Email Server (HTTP :8080, SMTP :1025)
+2. FastAPI Gateway with embedded Supervisor + Registry (:8000)
+3. Mail Agent - A2A worker for email operations (:8002)
+4. Validation Agent - A2A worker for document validation (:8003)
 
 Usage:
     python scripts/run_demo.py
@@ -29,33 +29,34 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Service configurations
-# Note: Agents currently need to be run separately as they don't have __main__ entry points
-# This demo currently only runs the email server and gateway
+# Services are started in order: Email Server -> Gateway -> Agents
 SERVICES = [
     {
         "name": "Mock Email Server",
         "module": "info_agent.email_server.runner",
+        "args": ["--api-port", "8080", "--smtp-port", "1025"],
         "port": 8080,
         "health_url": "http://localhost:8080/health",
     },
-    # TODO: Add agent startup once they have proper entry points
-    # {
-    #     "name": "Mail Agent",
-    #     "module": "info_agent.agents.mail.executor",
-    #     "port": 8002,
-    #     "health_url": "http://localhost:8002/health",
-    # },
-    # {
-    #     "name": "Validation Agent",
-    #     "module": "info_agent.agents.validation.executor",
-    #     "port": 8003,
-    #     "health_url": "http://localhost:8003/health",
-    # },
     {
         "name": "FastAPI Gateway",
         "script": "scripts/run_server.py",
         "port": 8000,
         "health_url": "http://localhost:8000/health",
+    },
+    {
+        "name": "Mail Agent",
+        "module": "info_agent.agents.mail",
+        "args": ["--port", "8002"],
+        "port": 8002,
+        "health_url": "http://localhost:8002/health",
+    },
+    {
+        "name": "Validation Agent",
+        "module": "info_agent.agents.validation",
+        "args": ["--port", "8003"],
+        "port": 8003,
+        "health_url": "http://localhost:8003/health",
     },
 ]
 
@@ -109,6 +110,10 @@ def start_service(service: dict) -> subprocess.Popen:
         cmd = [sys.executable, "-m", service["module"]]
     else:
         raise ValueError(f"Service {service['name']} must have 'script' or 'module' key")
+
+    # Add any additional arguments
+    if "args" in service:
+        cmd.extend(service["args"])
 
     process = subprocess.Popen(
         cmd,

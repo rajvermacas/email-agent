@@ -11,6 +11,7 @@ const InfoAgentSSE = (function() {
     // Private state
     let eventSource = null;
     let reconnectAttempts = 0;
+    let isConnecting = false;
     const MAX_RECONNECT_ATTEMPTS = 5;
     const RECONNECT_DELAY_MS = 2000;
 
@@ -21,10 +22,23 @@ const InfoAgentSSE = (function() {
      * @returns {EventSource} The event source connection
      */
     function connect(workflowId, onEvent) {
+        // Prevent duplicate connections
+        if (isConnecting) {
+            console.log('[AG-UI] Already connecting, skipping duplicate request');
+            return eventSource;
+        }
+
+        if (eventSource && eventSource.readyState !== EventSource.CLOSED) {
+            console.log('[AG-UI] Already connected, skipping duplicate request');
+            return eventSource;
+        }
+
+        // Close any stale connection
         if (eventSource) {
             disconnect();
         }
 
+        isConnecting = true;
         const url = `/api/workflows/${workflowId}/stream`;
         console.log(`[AG-UI] Connecting to SSE stream: ${url}`);
 
@@ -32,12 +46,14 @@ const InfoAgentSSE = (function() {
 
         eventSource.onopen = function() {
             console.log('[AG-UI] SSE connection opened');
+            isConnecting = false;
             reconnectAttempts = 0;
             updateConnectionStatus('connected');
         };
 
         eventSource.onerror = function(error) {
             console.error('[AG-UI] SSE connection error:', error);
+            isConnecting = false;
             updateConnectionStatus('error');
 
             if (eventSource.readyState === EventSource.CLOSED) {
@@ -80,10 +96,8 @@ const InfoAgentSSE = (function() {
             });
         });
 
-        // Handle generic messages
-        eventSource.onmessage = function(event) {
-            handleEvent('message', event, onEvent);
-        };
+        // Note: Removed generic onmessage handler to prevent duplicate event handling.
+        // All AG-UI events use named event types (addEventListener above).
 
         return eventSource;
     }
@@ -96,6 +110,7 @@ const InfoAgentSSE = (function() {
             console.log('[AG-UI] Disconnecting SSE stream');
             eventSource.close();
             eventSource = null;
+            isConnecting = false;
             updateConnectionStatus('disconnected');
         }
     }

@@ -430,7 +430,7 @@ async def get_workflow_emails(workflow_id: str) -> WorkflowEmailsResponse:
     )
 
 
-@router.post("/{workflow_id}/stream")
+@router.get("/{workflow_id}/stream")
 async def stream_workflow(
     workflow_id: str,
     request: Request,
