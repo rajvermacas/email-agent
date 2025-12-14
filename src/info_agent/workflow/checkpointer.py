@@ -6,11 +6,11 @@ allowing workflows to be resumed after restarts.
 """
 
 import logging
-import sqlite3
 from pathlib import Path
 from typing import Any
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import StateGraph
 
 from info_agent.utils.logging import get_logger
@@ -18,23 +18,23 @@ from info_agent.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def create_checkpointer(db_path: str) -> SqliteSaver:
+async def create_checkpointer(db_path: str) -> AsyncSqliteSaver:
     """
-    Create SQLite checkpointer for LangGraph.
+    Create async SQLite checkpointer for LangGraph.
 
-    This function initializes the SQLite database and creates the
-    necessary tables and indexes for checkpoint storage.
+    This function initializes the SQLite database using AsyncSqliteSaver's
+    built-in schema management.
 
     Args:
         db_path: Path to the SQLite database file.
 
     Returns:
-        Configured SqliteSaver instance.
+        Configured AsyncSqliteSaver instance.
 
     Raises:
         StorageError: If database initialization fails.
     """
-    logger.info(f"Initializing SQLite checkpointer at {db_path}")
+    logger.info(f"Initializing async SQLite checkpointer at {db_path}")
 
     # Ensure directory exists
     path = Path(db_path)
@@ -42,33 +42,36 @@ def create_checkpointer(db_path: str) -> SqliteSaver:
     logger.debug(f"Ensuring parent directory exists: {parent}")
     parent.mkdir(parents=True, exist_ok=True)
 
-    # Create connection with proper settings
-    logger.debug("Creating SQLite connection")
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    # Create async connection using aiosqlite
+    logger.debug("Creating async SQLite connection")
+    conn = await aiosqlite.connect(db_path)
 
     # Enable WAL mode for better concurrent access
-    logger.debug("Enabling WAL mode")
-    conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute("PRAGMA journal_mode=WAL")
 
-    # Create checkpoint tables if they don't exist
-    logger.debug("Creating checkpoint tables")
-    _create_checkpoint_tables(conn)
+    # Create AsyncSqliteSaver with the connection
+    # Note: AsyncSqliteSaver.from_conn_string is a context manager, so we use direct connection
+    logger.debug("Creating AsyncSqliteSaver with aiosqlite connection")
+    checkpointer = AsyncSqliteSaver(conn)
 
-    logger.info(f"SQLite checkpointer initialized successfully at {db_path}")
+    # Setup the database schema (AsyncSqliteSaver manages its own schema)
+    await checkpointer.setup()
 
-    return SqliteSaver(conn)
+    logger.info(f"Async SQLite checkpointer initialized successfully at {db_path}")
+
+    return checkpointer
 
 
-def _create_checkpoint_tables(conn: sqlite3.Connection) -> None:
+async def _create_checkpoint_tables(conn: aiosqlite.Connection) -> None:
     """
     Create checkpoint tables and indexes.
 
     Args:
-        conn: SQLite database connection.
+        conn: Async SQLite database connection.
     """
     logger.debug("Creating checkpoints table")
 
-    conn.execute("""
+    await conn.execute("""
         CREATE TABLE IF NOT EXISTS checkpoints (
             thread_id TEXT NOT NULL,
             checkpoint_id TEXT NOT NULL,
@@ -81,13 +84,13 @@ def _create_checkpoint_tables(conn: sqlite3.Connection) -> None:
     """)
 
     logger.debug("Creating checkpoints index")
-    conn.execute("""
+    await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_checkpoints_thread_id
         ON checkpoints(thread_id)
     """)
 
     logger.debug("Creating checkpoint writes table")
-    conn.execute("""
+    await conn.execute("""
         CREATE TABLE IF NOT EXISTS checkpoint_writes (
             thread_id TEXT NOT NULL,
             checkpoint_id TEXT NOT NULL,
@@ -99,31 +102,31 @@ def _create_checkpoint_tables(conn: sqlite3.Connection) -> None:
         )
     """)
 
-    conn.commit()
+    await conn.commit()
     logger.debug("Checkpoint tables created successfully")
 
 
-def compile_workflow_with_checkpointer(
+async def compile_workflow_with_checkpointer(
     workflow: StateGraph,
     db_path: str,
 ) -> Any:
     """
-    Compile a LangGraph workflow with SQLite checkpointing.
+    Compile a LangGraph workflow with async SQLite checkpointing.
 
     Args:
         workflow: LangGraph StateGraph to compile.
         db_path: Path to the SQLite database file.
 
     Returns:
-        Compiled workflow with checkpointing enabled.
+        Compiled workflow with async checkpointing enabled.
     """
-    logger.info(f"Compiling workflow with checkpointer at {db_path}")
+    logger.info(f"Compiling workflow with async checkpointer at {db_path}")
 
-    checkpointer = create_checkpointer(db_path)
+    checkpointer = await create_checkpointer(db_path)
 
     compiled = workflow.compile(checkpointer=checkpointer)
 
-    logger.info("Workflow compiled successfully with checkpointing")
+    logger.info("Workflow compiled successfully with async checkpointing")
 
     return compiled
 
@@ -177,18 +180,14 @@ async def list_workflow_threads(db_path: str) -> list[str]:
         logger.debug("Database does not exist, returning empty list")
         return []
 
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-
-    try:
-        cursor = conn.execute(
+    async with aiosqlite.connect(db_path) as conn:
+        cursor = await conn.execute(
             "SELECT DISTINCT thread_id FROM checkpoints ORDER BY created_at DESC"
         )
-        threads = [row[0] for row in cursor.fetchall()]
+        rows = await cursor.fetchall()
+        threads = [row[0] for row in rows]
         logger.debug(f"Found {len(threads)} workflow threads")
         return threads
-
-    finally:
-        conn.close()
 
 
 async def delete_workflow_thread(
@@ -212,24 +211,22 @@ async def delete_workflow_thread(
         logger.warning(f"Database does not exist: {db_path}")
         return False
 
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-
-    try:
+    async with aiosqlite.connect(db_path) as conn:
         # Delete from checkpoint_writes first (foreign key-like relationship)
-        cursor = conn.execute(
+        cursor = await conn.execute(
             "DELETE FROM checkpoint_writes WHERE thread_id = ?",
             (thread_id,)
         )
         writes_deleted = cursor.rowcount
 
         # Delete from checkpoints
-        cursor = conn.execute(
+        cursor = await conn.execute(
             "DELETE FROM checkpoints WHERE thread_id = ?",
             (thread_id,)
         )
         checkpoints_deleted = cursor.rowcount
 
-        conn.commit()
+        await conn.commit()
 
         if checkpoints_deleted > 0:
             logger.info(
@@ -240,6 +237,3 @@ async def delete_workflow_thread(
 
         logger.debug(f"Thread {thread_id} not found")
         return False
-
-    finally:
-        conn.close()

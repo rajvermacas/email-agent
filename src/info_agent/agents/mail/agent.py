@@ -572,6 +572,7 @@ class MailAgent:
         ]
 
         # Use snake_case for SDK compatibility
+        # Important: Set preferred_transport to "HTTP+JSON" to match REST adapter
         card = AgentCard(
             name=self.AGENT_NAME,
             description=self.AGENT_DESCRIPTION,
@@ -585,6 +586,7 @@ class MailAgent:
             skills=skills,
             default_input_modes=["data"],  # SDK uses snake_case
             default_output_modes=["data"],  # SDK uses snake_case
+            preferred_transport="HTTP+JSON",  # Match A2ARESTFastAPIApplication transport
         )
 
         logger.debug("SDK agent card created", skills_count=len(skills))

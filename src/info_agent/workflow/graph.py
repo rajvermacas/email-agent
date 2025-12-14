@@ -119,16 +119,16 @@ def create_workflow_graph() -> StateGraph:
     return workflow
 
 
-def compile_workflow(db_path: str | None = None) -> Any:
+async def compile_workflow(db_path: str | None = None) -> Any:
     """
-    Compile the workflow with SQLite checkpointing.
+    Compile the workflow with async SQLite checkpointing.
 
     Args:
         db_path: Optional path to checkpoint database.
                  If not provided, uses config setting.
 
     Returns:
-        Compiled LangGraph workflow with checkpointing.
+        Compiled LangGraph workflow with async checkpointing.
     """
     logger.info("Compiling workflow")
 
@@ -140,7 +140,7 @@ def compile_workflow(db_path: str | None = None) -> Any:
 
     # Create and compile the workflow
     workflow = create_workflow_graph()
-    compiled = compile_workflow_with_checkpointer(workflow, db_path)
+    compiled = await compile_workflow_with_checkpointer(workflow, db_path)
 
     logger.info("Workflow compiled successfully", db_path=db_path)
 
@@ -151,7 +151,7 @@ def compile_workflow(db_path: str | None = None) -> Any:
 _compiled_workflow: Any = None
 
 
-def get_compiled_workflow() -> Any:
+async def get_compiled_workflow() -> Any:
     """
     Get the compiled workflow singleton.
 
@@ -162,7 +162,7 @@ def get_compiled_workflow() -> Any:
 
     if _compiled_workflow is None:
         logger.info("Initializing compiled workflow singleton")
-        _compiled_workflow = compile_workflow()
+        _compiled_workflow = await compile_workflow()
 
     return _compiled_workflow
 
@@ -194,7 +194,7 @@ async def run_workflow(
     logger.info(f"Running workflow {workflow_id}")
 
     if compiled_workflow is None:
-        compiled_workflow = get_compiled_workflow()
+        compiled_workflow = await get_compiled_workflow()
 
     config = {"configurable": {"thread_id": workflow_id}}
 
@@ -230,7 +230,7 @@ async def resume_workflow(
     logger.info(f"Resuming workflow {workflow_id}")
 
     if compiled_workflow is None:
-        compiled_workflow = get_compiled_workflow()
+        compiled_workflow = await get_compiled_workflow()
 
     config = {"configurable": {"thread_id": workflow_id}}
 

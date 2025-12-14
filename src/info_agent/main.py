@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         from info_agent.workflow.checkpointer import create_checkpointer
 
-        create_checkpointer(settings.checkpoint_db_path)
+        await create_checkpointer(settings.checkpoint_db_path)
         logger.info(
             "Workflow checkpointer initialized",
             db_path=settings.checkpoint_db_path,
@@ -203,13 +203,12 @@ def _include_routers(app: FastAPI) -> None:
     except Exception as e:
         logger.error("Failed to include A2A router", error=str(e))
 
-    # Include API routes (will be added by sub-agent)
+    # Include all API routes (health, webhooks, workflows)
     try:
-        from info_agent.api.routes import create_api_router
+        from info_agent.api.routes import include_all_routers
 
-        api_router = create_api_router()
-        app.include_router(api_router, prefix="/api/v1")
-        logger.info("API routes included")
+        include_all_routers(app)
+        logger.info("API routes included (health, webhooks, workflows)")
     except ImportError as e:
         logger.warning("Could not import API routes", error=str(e))
     except Exception as e:

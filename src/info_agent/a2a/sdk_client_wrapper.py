@@ -65,12 +65,17 @@ class SDKClientWrapper:
         await self.httpx_client.aclose()
         logger.debug("SDK Client Wrapper closed")
 
-    async def get_agent_card(self, agent_url: str) -> AgentCard:
+    async def get_agent_card(
+        self,
+        agent_url: str,
+        agent_name: str | None = None,
+    ) -> AgentCard:
         """
         Fetch agent card from agent's well-known endpoint.
 
         Args:
             agent_url: Base URL of the agent.
+            agent_name: Optional agent name for error reporting.
 
         Returns:
             AgentCard instance.
@@ -78,7 +83,10 @@ class SDKClientWrapper:
         Raises:
             AgentCommunicationError: If fetching agent card fails.
         """
-        card_url = f"{agent_url}/.well-known/agent.json"
+        # Use agent name if provided, otherwise extract from URL or use "unknown"
+        _agent_name = agent_name or agent_url.split("/")[-1] or "unknown"
+        # SDK uses agent-card.json (with hyphen), not agent.json
+        card_url = f"{agent_url}/.well-known/agent-card.json"
 
         logger.debug(f"Fetching agent card from {card_url}")
 
@@ -105,6 +113,7 @@ class SDKClientWrapper:
             )
             raise AgentCommunicationError(
                 message=f"Failed to fetch agent card: {str(e)}",
+                agent_name=_agent_name,
                 endpoint=card_url,
                 details={"error": str(e)},
             ) from e
@@ -117,6 +126,7 @@ class SDKClientWrapper:
             )
             raise AgentCommunicationError(
                 message=f"Unexpected error fetching agent card: {str(e)}",
+                agent_name=_agent_name,
                 endpoint=card_url,
                 details={"error": str(e), "error_type": type(e).__name__},
             ) from e
@@ -160,7 +170,7 @@ class SDKClientWrapper:
 
         try:
             # Fetch agent card
-            agent_card = await self.get_agent_card(agent_url)
+            agent_card = await self.get_agent_card(agent_url, agent_name)
 
             # Create SDK client from agent card
             client = self.client_factory.create(agent_card)
